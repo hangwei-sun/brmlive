@@ -1,0 +1,41 @@
+{
+  "httpAddr": "0.0.0.0:9101",
+  "mediaMTXRTMPBase": "rtmp://127.0.0.1:1935",
+  "restartDelay": "5s",
+  "groups": [
+    {
+      "name": "audio-mpts-10002",
+      "mode": "mpts",
+      "inputFormat": "mpegts",
+      "address": "239.0.0.1",
+      "port": 10002,
+      "localAddress": "",
+      "programs": [
+        { "name": "Encoder 1", "programNumber": 256, "publishPath": "audio_encoder_1", "bitrate": "128k", "sampleRate": 48000, "channels": 2 },
+        { "name": "Encoder 2", "programNumber": 512, "publishPath": "audio_encoder_2", "bitrate": "128k", "sampleRate": 48000, "channels": 2 },
+        { "name": "Encoder 3", "programNumber": 768, "publishPath": "audio_encoder_3", "bitrate": "128k", "sampleRate": 48000, "channels": 2 },
+        { "name": "Encoder 4", "programNumber": 1024, "publishPath": "audio_encoder_4", "bitrate": "128k", "sampleRate": 48000, "channels": 2 }
+      ]
+    },
+    {
+      "name": "audio-mpts-10003",
+      "enabled": false,
+      "mode": "mpts",
+      "inputFormat": "mpegts",
+      "address": "239.0.0.1",
+      "port": 10003,
+      "localAddress": "",
+      "programs": []
+    },
+    {
+      "name": "audio-single-udp-example",
+      "enabled": false,
+      "mode": "single",
+      "inputUrl": "udp://@192.0.2.20:12000",
+      "inputFormat": "mpegts",
+      "programs": [
+        { "name": "Single UDP", "programNumber": 0, "publishPath": "audio_single_udp", "bitrate": "128k", "sampleRate": 48000, "channels": 2 }
+      ]
+    }
+  ]
+}

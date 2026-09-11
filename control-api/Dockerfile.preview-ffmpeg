@@ -1,0 +1,9 @@
+FROM brmlive-control-api:latest AS timezone
+FROM bluenviron/mediamtx:1.20.1-ffmpeg
+
+RUN mkdir -p /data /app/web
+COPY --from=timezone /usr/share/zoneinfo /usr/share/zoneinfo
+COPY control-api-linux-local /usr/local/bin/control-api
+COPY web /app/web
+
+ENTRYPOINT ["/usr/local/bin/control-api"]

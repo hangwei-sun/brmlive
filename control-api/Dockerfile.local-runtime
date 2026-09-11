@@ -1,0 +1,3 @@
+FROM brmlive-control-api:latest
+COPY control-api-linux-local /usr/local/bin/control-api
+COPY web/index.html /app/web/index.html

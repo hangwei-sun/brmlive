@@ -1,0 +1,27 @@
+.env
+data/recordings/*
+data/sink-recordings/*
+data/logs/*
+data/control/*
+!data/recordings/.gitkeep
+!data/sink-recordings/.gitkeep
+!data/logs/.gitkeep
+
+# Local build outputs, exported images and upstream reference checkout.
+output/
+control-api/control-api-linux*
+udp-splitter/udp-splitter-linux*
+upstream/
+$env
+.playwright-cli/
+control-api/control-api/
+control-api/output/
+data/*.db*
+
+# Private runtime and deployment material. Keep these local only.
+docs/
+部署信息.md
+代理.md
+inspect_local.py
+udp-splitter/config.json
+deploy/production/udp-splitter.group1-test.json

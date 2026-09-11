@@ -1,0 +1,43 @@
+logLevel: info
+logDestinations: [stdout]
+
+# Docker Desktop cannot raise the UDP socket buffer to 1 MB reliably; use the
+# platform default for local validation and tune it only on the Linux host.
+
+authMethod: http
+authHTTPAddress: http://control-api:8080/api/v1/media-auth
+authHTTPExclude:
+  - action: api
+  - action: metrics
+
+rtmp: true
+rtmpAddress: :1935
+
+hls: true
+hlsAddress: :8888
+hlsAllowOrigins: ["*"]
+
+api: true
+apiAddress: :9997
+apiAllowOrigins: ["*"]
+
+metrics: true
+metricsAddress: :9998
+
+pathDefaults:
+  sourceOnDemand: false
+  record: false
+  recordPath: /recordings/%path/%Y-%m-%d/%H-%M-%S-%f
+  recordFormat: fmp4
+  recordPartDuration: 1s
+  recordMaxPartSize: 50M
+  recordSegmentDuration: 30s
+  recordDeleteAfter: 0s
+
+paths:
+  test_video:
+    source: https://demo.unified-streaming.com/k8s/features/stable/video/tears-of-steel/tears-of-steel.ism/.m3u8
+    sourceOnDemand: false
+    record: false
+    forward:
+      - dest: rtmp://mediamtx-sink:1935/test_video#smoke

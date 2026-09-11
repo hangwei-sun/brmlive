@@ -1,0 +1,79 @@
+name: brmlive-production
+
+services:
+  mediamtx:
+    image: ${MEDIAMTX_IMAGE}
+    restart: unless-stopped
+    environment:
+      MTX_LOGLEVEL: ${MEDIAMTX_LOG_LEVEL:-info}
+      TZ: ${TZ:-Asia/Shanghai}
+    ports:
+      # HLS is reachable from the LAN Nginx host for console previews.
+      - "${HLS_BIND:-0.0.0.0}:${HLS_PORT:-8888}:8888"
+      # RTMP uses its own TCP port. Keep it private by default; set RTMP_BIND=0.0.0.0
+      # on hosts that intentionally accept external publishers/readers.
+      - "${RTMP_BIND:-127.0.0.1}:${RTMP_PORT:-1935}:1935"
+      - "127.0.0.1:${API_PORT:-19997}:9997"
+      - "127.0.0.1:${METRICS_PORT:-19998}:9998"
+    volumes:
+      - ./mediamtx.yml:/mediamtx.yml:ro
+      - /etc/localtime:/etc/localtime:ro
+      - /usr/share/zoneinfo:/usr/share/zoneinfo:ro
+      - ${RECORDINGS_DIR}:/recordings
+      - ./data/logs/mediamtx:/logs
+    networks:
+      - brmlive
+
+  control-api:
+    image: ${CONTROL_API_IMAGE}
+    entrypoint: ["/usr/local/bin/control-api"]
+    restart: unless-stopped
+    # Recording files may be created by MediaMTX as root on the shared volume.
+    # Run the control service with matching privileges so indexed files can be deleted.
+    user: "0:0"
+    environment:
+      CONTROL_API_PORT: 8080
+      CONTROL_DB_PATH: /data/control.db
+      WEB_ROOT: /app/web
+      MEDIAMTX_API_URL: http://mediamtx:9997
+      MEDIAMTX_HLS_INTERNAL_URL: http://mediamtx:8888
+      MEDIAMTX_HLS_PROXY_BASE_URL: ${MEDIAMTX_HLS_PROXY_BASE_URL:-}
+      PUBLIC_RTMP_BASE_URL: ${PUBLIC_RTMP_BASE_URL:-rtmp://127.0.0.1:1935}
+      PUBLIC_HLS_BASE_URL: ${PUBLIC_HLS_BASE_URL:-http://127.0.0.1:8081/hls}
+      SPLITTER_STATUS_URL: ${SPLITTER_STATUS_URL:-}
+      RECORDINGS_ROOT: /recordings
+      TZ: ${TZ:-Asia/Shanghai}
+      ADMIN_USER: ${ADMIN_USER:-admin}
+      ADMIN_PASSWORD: ${ADMIN_PASSWORD}
+      STREAM_KEY_ENCRYPTION_KEY: ${STREAM_KEY_ENCRYPTION_KEY}
+    ports:
+      - "${CONTROL_BIND:-0.0.0.0}:${CONTROL_API_PORT:-8081}:8080"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    volumes:
+      - ./data/control:/data
+      - ${RECORDINGS_DIR}:/recordings
+    depends_on:
+      - mediamtx
+    networks:
+      - brmlive
+
+  # Run only on a host connected to the multicast VLAN:
+  # docker compose --profile udp up -d udp-splitter
+  udp-splitter:
+    profiles: ["udp"]
+    image: ${UDP_SPLITTER_IMAGE:-brmlive-udp-splitter:latest}
+    restart: unless-stopped
+    network_mode: host
+    environment:
+      SPLITTER_CONFIG: /etc/udp-splitter/config.json
+      SPLITTER_HTTP_ADDR: ${SPLITTER_HTTP_ADDR:-127.0.0.1:9101}
+      MEDIAMTX_RTMP_BASE: ${SPLITTER_MEDIAMTX_RTMP_BASE:-rtmp://127.0.0.1:1935}
+      TZ: ${TZ:-Asia/Shanghai}
+    volumes:
+      - ./udp-splitter/config.json:/etc/udp-splitter/config.json:ro
+      - ./data/logs/splitter:/logs
+
+networks:
+  brmlive:
+    driver: bridge

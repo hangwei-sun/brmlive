@@ -1,0 +1,90 @@
+name: brmlive
+
+services:
+  mediamtx:
+    image: ${MEDIAMTX_IMAGE:-bluenviron/mediamtx@sha256:16c56911dbd1fd7a85455042fa8320779fc8bf6575c6903f74023b202c1a620c}
+    restart: unless-stopped
+    environment:
+      MTX_LOGLEVEL: ${MEDIAMTX_LOG_LEVEL:-info}
+      TZ: ${TZ:-Asia/Shanghai}
+    ports:
+      - "${HLS_PORT:-8888}:8888"
+      - "${RTMP_PORT:-1935}:1935"
+      - "127.0.0.1:${API_PORT:-19997}:9997"
+      - "127.0.0.1:${METRICS_PORT:-19998}:9998"
+    volumes:
+      - ./mediamtx.yml:/mediamtx.yml:ro
+      - /etc/localtime:/etc/localtime:ro
+      - /usr/share/zoneinfo:/usr/share/zoneinfo:ro
+      - ./data/recordings:/recordings
+      - ./data/logs:/logs
+    networks:
+      - brmlive
+
+  mediamtx-sink:
+    image: ${MEDIAMTX_IMAGE:-bluenviron/mediamtx@sha256:16c56911dbd1fd7a85455042fa8320779fc8bf6575c6903f74023b202c1a620c}
+    restart: unless-stopped
+    volumes:
+      - ./mediamtx-sink.yml:/mediamtx.yml:ro
+      - ./data/sink-recordings:/recordings
+      - ./data/logs/sink:/logs
+    ports:
+      - "127.0.0.1:${SINK_API_PORT:-29997}:9997"
+    networks:
+      - brmlive
+
+  control-api:
+    image: ${CONTROL_API_IMAGE:-brmlive-control-api:latest}
+    build:
+      context: ./control-api
+      dockerfile: Dockerfile.preview-ffmpeg
+    restart: unless-stopped
+    user: "0:0"
+    environment:
+      CONTROL_API_PORT: 8080
+      CONTROL_DB_PATH: /data/control.db
+      WEB_ROOT: /app/web
+      MEDIAMTX_API_URL: http://mediamtx:9997
+      MEDIAMTX_HLS_PROXY_BASE_URL: ${MEDIAMTX_HLS_PROXY_BASE_URL:-}
+      PUBLIC_HLS_BASE_URL: ${PUBLIC_HLS_BASE_URL:-http://localhost:8080/hls}
+      SPLITTER_STATUS_URL: ${SPLITTER_STATUS_URL:-http://host.docker.internal:9101}
+      PUBLIC_RTMP_BASE_URL: ${PUBLIC_RTMP_BASE_URL:-rtmp://localhost:1935}
+      RECORDINGS_ROOT: /recordings
+      TZ: ${TZ:-Asia/Shanghai}
+      ADMIN_USER: ${ADMIN_USER:-admin}
+      ADMIN_PASSWORD: ${ADMIN_PASSWORD:-change-me}
+      STREAM_KEY_ENCRYPTION_KEY: ${STREAM_KEY_ENCRYPTION_KEY:-local-change-me}
+    ports:
+      - "127.0.0.1:${CONTROL_API_PORT:-8080}:8080"
+      # Some systems resolve localhost to IPv6 (::1) first.
+      - "[::1]:${CONTROL_API_PORT:-8080}:8080"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    volumes:
+      - ./data/control:/data
+      - ./data/recordings:/recordings
+    depends_on:
+      - mediamtx
+    networks:
+      - brmlive
+
+  # The splitter must run on a Linux host connected to the multicast VLAN.
+  # It is opt-in so Docker Desktop smoke tests do not pretend to validate LAN multicast.
+  udp-splitter:
+    profiles: ["udp"]
+    build:
+      context: ./udp-splitter
+    restart: unless-stopped
+    network_mode: host
+    environment:
+      SPLITTER_CONFIG: /etc/udp-splitter/config.json
+      SPLITTER_HTTP_ADDR: ${SPLITTER_HTTP_ADDR:-127.0.0.1:9101}
+      MEDIAMTX_RTMP_BASE: ${SPLITTER_MEDIAMTX_RTMP_BASE:-rtmp://127.0.0.1:1935}
+      TZ: ${TZ:-Asia/Shanghai}
+    volumes:
+      - ./udp-splitter/config.json:/etc/udp-splitter/config.json:ro
+      - ./data/logs/splitter:/logs
+
+networks:
+  brmlive:
+    driver: bridge

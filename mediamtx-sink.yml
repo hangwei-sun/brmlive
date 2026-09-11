@@ -1,0 +1,27 @@
+logLevel: info
+logDestinations: [stdout]
+
+authMethod: internal
+authInternalUsers:
+  - user: any
+    pass:
+    ips: []
+    permissions:
+      - action: publish
+      - action: api
+      - action: metrics
+      - action: read
+
+rtmp: true
+rtmpAddress: :1935
+
+api: true
+apiAddress: :9997
+apiAllowOrigins: ["*"]
+
+metrics: true
+metricsAddress: :9998
+
+paths:
+  all_others:
+    source: publisher
