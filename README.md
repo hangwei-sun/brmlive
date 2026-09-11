@@ -1,9 +1,12 @@
 # brmlive
 
-基于 MediaMTX 和 Go control-api 的直播流管理项目，支持：
+![包融媒体信号调度中心控制台截图](assets/cover.png)
+
+基于 **MediaMTX、FFmpeg 和 Go control-api** 的直播信号调度管理项目，面向多源节目接入、定时录制与多平台分发，支持：
 
 - HLS、UDP/MPEG-TS 和 `publisher://` 节目源
 - HLS 输出、fMP4 录制和多个 RTMP/RTMPS 目标分发
+- FFmpeg 处理 UDP/MPEG-TS 解复用、MP2 到 AAC 转码、RTMP 原码中继与录制预览生成
 - 节目、推流目标、第三方流地址、录制计划和录制文件管理
 - MediaMTX 状态同步、断流恢复、目标中继和事件记录
 - 可选的同 VLAN UDP 多节目（MPTS）音频拆分
