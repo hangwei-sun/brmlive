@@ -120,6 +120,13 @@ class SpeechAdapterTest(unittest.TestCase):
         with self.assertRaises(ValueError):
             self.app.sentence_rows(iter([segment]), 2, split_sentences=True)
 
+    def test_zero_duration_word_preserves_text_without_false_fallback(self):
+        segment = types.SimpleNamespace(start=0, end=1, text='新闻。', words=[
+            types.SimpleNamespace(start=0, end=0, word='新'),
+            types.SimpleNamespace(start=0, end=1, word='闻。')])
+        rows = self.app.sentence_rows(iter([segment]), 1, split_sentences=True)
+        self.assertEqual(rows, [{'start': 0, 'end': 1, 'text': '新闻。', 'speech_start': 0}])
+
     def test_lazy_batch_oom_retry_and_unrelated_error_sanitized(self):
         for message, status in [('CUDA out of memory', 200), ('private driver path', 503)]:
             class Pipeline:

@@ -139,7 +139,7 @@ def sentence_rows(segments, duration, split_sentences=False):
             pieces, current = [], []
             for word in words:
                 if (not math.isfinite(word.start) or not math.isfinite(word.end)
-                        or word.start < item.start or word.end > item.end + 0.001 or word.end <= word.start
+                        or word.start < item.start or word.end > item.end + 0.001 or word.end < word.start
                         or current and word.start < current[-1].end):
                     raise ValueError('Invalid batch word alignment')
                 current.append(word)
