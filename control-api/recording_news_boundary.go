@@ -19,8 +19,8 @@ func alignNewsPicture(ctx context.Context, source string, start, end, floor floa
 	probeCtx, cancel := context.WithTimeout(ctx, 8*time.Second)
 	defer cancel()
 	cmd := exec.CommandContext(probeCtx, "ffmpeg", "-hide_banner", "-loglevel", "error", "-nostdin",
-		"-threads", "2", "-ss", fmt.Sprintf("%.6f", window), "-i", source,
-		"-t", "0.800", "-an", "-map", "0:v:0", "-filter_threads", "1",
+		"-threads", "2", "-ss", fmt.Sprintf("%.6f", window), "-t", "0.800", "-i", source,
+		"-an", "-map", "0:v:0", "-filter_threads", "1",
 		"-vf", "scale=320:-2,select='gt(scene,0.30)',metadata=print:file=-",
 		"-fps_mode", "vfr", "-f", "null", "-")
 	out, err := cmd.Output()
