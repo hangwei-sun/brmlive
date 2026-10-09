@@ -109,6 +109,17 @@ class SpeechAdapterTest(unittest.TestCase):
         self.assertEqual(r.json()['segments'][0]['text'], '新闻正文')
         self.assertTrue(r.json()['timings']['fallback'])
 
+    def test_batch_sentences_keep_word_boundaries_and_all_text(self):
+        segment = types.SimpleNamespace(start=0, end=2, text='新闻一。新闻二。', words=[
+            types.SimpleNamespace(start=0.05, end=0.8, word='新闻一。'),
+            types.SimpleNamespace(start=1.1, end=1.9, word='新闻二。')])
+        rows = self.app.sentence_rows(iter([segment]), 2, split_sentences=True)
+        self.assertEqual([r['start'] for r in rows], [0.05, 1.1])
+        self.assertEqual(''.join(r['text'] for r in rows), segment.text)
+        segment.words[1].word = '遗漏'
+        with self.assertRaises(ValueError):
+            self.app.sentence_rows(iter([segment]), 2, split_sentences=True)
+
     def test_lazy_batch_oom_retry_and_unrelated_error_sanitized(self):
         for message, status in [('CUDA out of memory', 200), ('private driver path', 503)]:
             class Pipeline:

@@ -124,7 +124,7 @@ def inference_settings():
     return engine, batch
 
 
-def sentence_rows(segments, duration):
+def sentence_rows(segments, duration, split_sentences=False):
     rows, last = [], 0.0
     for item in segments:
         if not item.text.strip():
@@ -132,6 +132,29 @@ def sentence_rows(segments, duration):
         if (not math.isfinite(item.start) or not math.isfinite(item.end)
                 or item.start < last or item.end <= item.start or item.end > duration + 1):
             raise ValueError('Invalid ASR timestamp sequence')
+        if split_sentences:
+            words = getattr(item, 'words', None) or []
+            if not words or ''.join(w.word for w in words).strip().replace(' ', '') != item.text.strip().replace(' ', ''):
+                raise ValueError('Incomplete batch word alignment')
+            pieces, current = [], []
+            for word in words:
+                if (not math.isfinite(word.start) or not math.isfinite(word.end)
+                        or word.start < item.start or word.end > item.end + 0.001 or word.end <= word.start
+                        or current and word.start < current[-1].end):
+                    raise ValueError('Invalid batch word alignment')
+                current.append(word)
+                if word.word.rstrip().rstrip('”’"\'').endswith(('。', '！', '？', '；', '!', '?', ';')):
+                    pieces.append(current)
+                    current = []
+            if current:
+                pieces.append(current)
+            for piece in pieces:
+                start, end = round(piece[0].start, 3), round(piece[-1].end, 3)
+                if start < last or end <= start:
+                    raise ValueError('Invalid batch sentence alignment')
+                rows.append({'start': start, 'end': end, 'text': ''.join(w.word for w in piece).strip(), 'speech_start': start})
+                last = end
+            continue
         row = {'start': round(item.start, 3), 'end': round(item.end, 3), 'text': item.text.strip()}
         if row['end'] <= row['start']:
             raise ValueError('Invalid rounded ASR timestamp')
@@ -164,7 +187,7 @@ def recognise(path, duration):
         try:
             segments, _ = pipeline.transcribe(samples, batch_size=batch, without_timestamps=False,
                                               vad_parameters={'min_silence_duration_ms': 2000}, **options)
-            rows = sentence_rows(segments, duration)
+            rows = sentence_rows(segments, duration, split_sentences=True)
         except (ValueError, RuntimeError) as error:
             # Invalid alignment/OOM may use the proven path once, never discard
             # a presenter's opening words or return a partially collected batch.
