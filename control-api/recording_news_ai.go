@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"mime/multipart"
 	"net/http"
 	"net/url"
@@ -42,9 +43,10 @@ func (config newsSmartConfig) validate() error {
 }
 
 type newsSentence struct {
-	Start float64 `json:"start"`
-	End   float64 `json:"end"`
-	Text  string  `json:"text"`
+	Start       float64  `json:"start"`
+	End         float64  `json:"end"`
+	Text        string   `json:"text"`
+	SpeechStart *float64 `json:"speech_start,omitempty"`
 }
 
 func newsHTTP() *http.Client {
@@ -56,6 +58,7 @@ func transcribeNews(ctx context.Context, client *http.Client, config newsSmartCo
 	_ = form.WriteField("model", config.ASRModel)
 	_ = form.WriteField("response_format", "verbose_json")
 	_ = form.WriteField("timestamp_granularities[]", "segment")
+	_ = form.WriteField("timestamp_granularities[]", "word")
 	_ = form.WriteField("language", "zh")
 	writer, err := form.CreateFormFile("file", "news.wav")
 	if err != nil {
@@ -101,10 +104,21 @@ func transcribeNews(ctx context.Context, client *http.Client, config newsSmartCo
 	out := []newsSentence{}
 	last := 0.0
 	for _, sentence := range result.Segments {
-		if sentence.Start < last || sentence.End <= sentence.Start || sentence.End > length+1 || strings.TrimSpace(sentence.Text) == "" || len(sentence.Text) > 4096 {
+		if math.IsNaN(sentence.Start) || math.IsInf(sentence.Start, 0) || math.IsNaN(sentence.End) || math.IsInf(sentence.End, 0) || sentence.Start < last || sentence.End <= sentence.Start || sentence.End > length+1 || strings.TrimSpace(sentence.Text) == "" || len(sentence.Text) > 4096 {
 			return nil, errors.New("语音转写时间戳无效")
 		}
 		last = sentence.End
+		if sentence.SpeechStart != nil {
+			start := *sentence.SpeechStart
+			// Older adapters have no word alignment. Invalid or implausibly
+			// late alignment must not silently discard the beginning of speech.
+			if math.IsNaN(start) || math.IsInf(start, 0) || start < sentence.Start || start >= sentence.End || start > sentence.Start+0.5 {
+				sentence.SpeechStart = nil
+			} else {
+				absolute := start + offset
+				sentence.SpeechStart = &absolute
+			}
+		}
 		sentence.Start += offset
 		sentence.End += offset
 		if sentence.End > offset+length {
@@ -193,7 +207,11 @@ func validateNewsGroups(groups []newsGroup, sentences []newsSentence) ([]newsPar
 		if group.First <= last || group.First < 0 || group.Last < group.First || group.Last >= len(sentences) || strings.TrimSpace(group.Title) == "" || len([]rune(group.Title)) > 100 {
 			return nil, errors.New("新闻片段时间范围无效，请重试")
 		}
-		parts = append(parts, newsPart{Title: group.Title, Start: sentences[group.First].Start, End: sentences[group.Last].End})
+		start := sentences[group.First].Start
+		if sentences[group.First].SpeechStart != nil {
+			start = *sentences[group.First].SpeechStart
+		}
+		parts = append(parts, newsPart{Title: group.Title, Start: start, End: sentences[group.Last].End})
 		last = group.Last
 	}
 	return parts, nil
@@ -218,5 +236,20 @@ func analyseNews(ctx context.Context, source, dir string, duration float64, conf
 		progress(int((offset + length) / duration * 80))
 	}
 	progress(85)
-	return groupNews(ctx, client, config, sentences)
+	parts, err := groupNews(ctx, client, config, sentences)
+	if err != nil {
+		return nil, err
+	}
+	for i := range parts {
+		if ctx.Err() != nil {
+			return nil, ctx.Err()
+		}
+		floor := 0.0
+		if i > 0 {
+			floor = parts[i-1].End
+		}
+		parts[i].Start = alignNewsPicture(ctx, source, parts[i].Start, parts[i].End, floor)
+		progress(90 + (i+1)*9/len(parts))
+	}
+	return parts, nil
 }

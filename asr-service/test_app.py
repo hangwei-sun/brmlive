@@ -50,6 +50,20 @@ class SpeechAdapterTest(unittest.TestCase):
                                         files={"file": ("sample.wav", data)}, data={"model": model})
             self.assertEqual(response.status_code, 422)
 
+    def test_first_word_alignment_preserves_sentence_contract(self):
+        def transcribe(*args, **kwargs):
+            self.assertTrue(kwargs["word_timestamps"])
+            return iter([types.SimpleNamespace(start=0, end=0.8, text=" 新闻正文 ", words=[
+                types.SimpleNamespace(start=0.06, end=0.3, word="新闻"),
+                types.SimpleNamespace(start=0.3, end=0.8, word="正文"),
+            ])]), None
+        self.app._model = types.SimpleNamespace(transcribe=transcribe)
+        response = self.client.post("/v1/audio/transcriptions", headers=self.headers,
+                                    files={"file": ("sample.wav", wav())}, data={"model": "large-v3"})
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["segments"], [{"start": 0, "end": 0.8, "text": "新闻正文", "speech_start": 0.06}])
+        self.assertNotIn("words", response.json()["segments"][0])
+
     def test_sanitized_model_failures(self):
         self.app._model = types.SimpleNamespace(transcribe=lambda *args, **kwargs: (_ for _ in ()).throw(ValueError("private path and secret")))
         response = self.client.post("/v1/audio/transcriptions", headers=self.headers,

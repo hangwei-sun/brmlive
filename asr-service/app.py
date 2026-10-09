@@ -92,13 +92,21 @@ def transcribe(
             raise HTTPException(422, "Use mono 16 kHz PCM WAV, at most 10 minutes") from None
         segments, _ = _model.transcribe(
             path, language="zh", beam_size=5, vad_filter=True,
-            condition_on_previous_text=False,
+            condition_on_previous_text=False, word_timestamps=True,
             initial_prompt="以下是电视新闻节目，包含主播导语、记者报道、采访和节目结束语。请使用简体中文转写。",
         )
-        rows = [
-            {"start": round(item.start, 3), "end": round(item.end, 3), "text": item.text.strip()}
-            for item in segments if item.text.strip()
-        ]
+        rows = []
+        for item in segments:
+            if not item.text.strip():
+                continue
+            row = {"start": round(item.start, 3), "end": round(item.end, 3), "text": item.text.strip()}
+            # Keep sentence boundaries for semantic grouping, but expose the
+            # first spoken word separately. Never retain the word transcript.
+            for word in (getattr(item, "words", None) or []):
+                if word.word.strip() and word.end > word.start and item.start <= word.start < item.end:
+                    row["speech_start"] = round(word.start, 3)
+                    break
+            rows.append(row)
         return {"text": "".join(row["text"] for row in rows), "language": "zh", "duration": duration, "segments": rows}
     except HTTPException:
         raise

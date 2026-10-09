@@ -60,7 +60,8 @@ func TestASRAndChatContractsAndCredentialRedaction(t *testing.T) {
 			if r.FormValue("response_format") != "verbose_json" {
 				t.Error("timestamp response format missing")
 			}
-			writeJSON(w, 200, map[string]any{"segments": []newsSentence{{Start: 1, End: 3, Text: "新闻"}}})
+			start := 1.06
+			writeJSON(w, 200, map[string]any{"segments": []newsSentence{{Start: 1, End: 3, Text: "新闻", SpeechStart: &start}}})
 			return
 		}
 		var input map[string]any
@@ -78,8 +79,11 @@ func TestASRAndChatContractsAndCredentialRedaction(t *testing.T) {
 	if err != nil || sentences[0].Start != 601 || sentences[0].End != 603 {
 		t.Fatalf("chunk offset wrong: %+v %v", sentences, err)
 	}
+	if sentences[0].SpeechStart == nil || *sentences[0].SpeechStart != 601.06 {
+		t.Fatal("word alignment lost chunk offset")
+	}
 	parts, err := groupNews(context.Background(), server.Client(), config, sentences)
-	if err != nil || parts[0].Start != 601 {
+	if err != nil || parts[0].Start != 601.06 {
 		t.Fatal(err)
 	}
 	failed := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { http.Error(w, "test-key private internal path", 500) }))
