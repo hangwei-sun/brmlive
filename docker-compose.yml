@@ -50,6 +50,8 @@ services:
       SPLITTER_STATUS_URL: ${SPLITTER_STATUS_URL:-http://host.docker.internal:9101}
       PUBLIC_RTMP_BASE_URL: ${PUBLIC_RTMP_BASE_URL:-rtmp://localhost:1935}
       RECORDINGS_ROOT: /recordings
+      NEWS_ENCODER_URL: ${NEWS_ENCODER_URL:-}
+      NEWS_ENCODER_KEY: ${NEWS_ENCODER_KEY:-}
       TZ: ${TZ:-Asia/Shanghai}
       ADMIN_USER: ${ADMIN_USER:-admin}
       ADMIN_PASSWORD: ${ADMIN_PASSWORD:-change-me}

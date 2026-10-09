@@ -34,6 +34,8 @@ type newsJob struct {
 	State       string     `json:"state"`
 	Progress    int        `json:"progress"`
 	Message     string     `json:"message,omitempty"`
+	Stage       string     `json:"stage,omitempty"`
+	Encoder     string     `json:"encoder,omitempty"`
 	Parts       []newsPart `json:"parts"`
 	Files       []string   `json:"files"`
 	CreatedAt   int64      `json:"createdAt"`
@@ -441,32 +443,58 @@ func (a *app) runNewsJob(dir string, job newsJob, smart *newsSmartConfig, source
 		save()
 		return
 	}
-	for i, part := range job.Parts {
-		ext := ".mp4"
-		if kind == "audio" {
-			ext = ".m4a"
-		}
-		name := fmt.Sprintf("news-%02d%s", i+1, ext)
-		tmp := filepath.Join(dir, "partial"+ext)
-		args := []string{"-hide_banner", "-loglevel", "error", "-nostdin", "-y", "-ss", fmt.Sprintf("%.3f", part.Start), "-i", source, "-t", fmt.Sprintf("%.3f", part.End-part.Start), "-map", "0:a:0?"}
-		if kind != "audio" {
-			args = append(args, "-map", "0:v:0?", "-c:v", "libx264", "-preset", "veryfast", "-crf", "20", "-threads", "2")
-		}
-		args = append(args, "-c:a", "aac", "-b:a", "128k", "-movflags", "+faststart", tmp)
-		if err = exec.CommandContext(ctx, "ffmpeg", args...).Run(); err != nil {
-			_ = os.Remove(tmp)
-			fail("片段导出失败，请联系管理员检查媒体处理服务")
+	base, token, configErr := gpuExportConfig()
+	if configErr != nil && kind != "audio" {
+		fail(configErr.Error())
+		return
+	}
+	if base != "" && kind != "audio" {
+		if err = exportNewsGPU(ctx, base, token, source, dir, &job, duration, save); err != nil {
+			fail(err.Error())
 			return
 		}
-		if err = os.Rename(tmp, filepath.Join(dir, name)); err != nil {
-			fail("片段保存失败")
-			return
+	} else {
+		job.Encoder = "cpu"
+		total, done := 0.0, 0.0
+		for _, part := range job.Parts {
+			total += part.End - part.Start
 		}
-		job.Files = append(job.Files, name)
-		job.Progress = (i + 1) * 90 / len(job.Parts)
-		save()
+		for i, part := range job.Parts {
+			job.Stage = fmt.Sprintf("CPU 编码 · 第 %d/%d 条", i+1, len(job.Parts))
+			save()
+			ext := ".mp4"
+			if kind == "audio" {
+				ext = ".m4a"
+			}
+			name := fmt.Sprintf("news-%02d%s", i+1, ext)
+			tmp := filepath.Join(dir, "partial"+ext)
+			args := []string{"-hide_banner", "-loglevel", "error", "-nostdin", "-y", "-ss", fmt.Sprintf("%.3f", part.Start), "-i", source, "-t", fmt.Sprintf("%.3f", part.End-part.Start), "-map", "0:a:0?"}
+			if kind != "audio" {
+				args = append(args, "-map", "0:v:0?", "-c:v", "libx264", "-preset", "veryfast", "-crf", "20", "-threads", "2")
+			}
+			args = append(args, "-c:a", "aac", "-b:a", "128k", "-movflags", "+faststart", tmp)
+			if err = runNewsFFmpeg(ctx, args, part.End-part.Start, func(encoded float64) {
+				job.Progress = max(job.Progress, min(89, int((done+encoded)/total*90)))
+				save()
+			}); err != nil {
+				_ = os.Remove(tmp)
+				fail("片段导出失败，请联系管理员检查媒体处理服务")
+				return
+			}
+			if err = os.Rename(tmp, filepath.Join(dir, name)); err != nil {
+				fail("片段保存失败")
+				return
+			}
+			job.Files = append(job.Files, name)
+			done += part.End - part.Start
+			job.Progress = int(done / total * 90)
+			save()
+		}
 	}
 	if job.Kind != "preview" {
+		job.Stage = "正在打包下载文件"
+		job.Progress = 90
+		save()
 		if err := zipNews(dir, job.Files, job.Parts); err != nil {
 			fail("打包失败，请重新提交")
 			return
@@ -474,6 +502,7 @@ func (a *app) runNewsJob(dir string, job newsJob, smart *newsSmartConfig, source
 		job.Files = append(job.Files, "news-clips.zip")
 	}
 	job.State, job.Progress = "completed", 100
+	job.Stage = "处理完成"
 	save()
 }
 func zipNews(dir string, files []string, parts []newsPart) error {

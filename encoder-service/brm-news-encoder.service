@@ -1,0 +1,18 @@
+[Unit]
+Description=Private BRM news NVENC encoder
+After=network-online.target
+
+[Service]
+User=brm-news-encoder
+Group=brm-news-encoder
+WorkingDirectory=/opt/brm-news-encoder
+EnvironmentFile=/opt/brm-news-encoder/private.env
+ExecStart=/opt/brm-news-encoder/venv/bin/uvicorn app:app --host 172.16.28.30 --port 8092 --workers 1 --no-access-log
+Restart=on-failure
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+TimeoutStopSec=30
+
+[Install]
+WantedBy=multi-user.target
