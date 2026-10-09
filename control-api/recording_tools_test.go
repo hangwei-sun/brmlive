@@ -156,6 +156,31 @@ func TestNewsExportRealFFmpeg(t *testing.T) {
 		t.Fatal(err)
 	}
 	a := &app{db: db, recordingsRoot: root, previewRoot: filepath.Join(root, "cache", "previews")}
+	a.previewJobs = map[int64]*previewJob{}
+	a.previewSem = make(chan struct{}, 1)
+	inputInfo, _ := os.Stat(source)
+	previewFile, ready, err := a.previewPath(1, source, inputInfo.ModTime())
+	if err != nil {
+		t.Fatal(err)
+	}
+	for until := time.Now().Add(10 * time.Second); !ready && time.Now().Before(until); {
+		time.Sleep(50 * time.Millisecond)
+		previewFile, ready, err = a.previewPath(1, source, inputInfo.ModTime())
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	previewDuration, err := newsDuration(context.Background(), previewFile)
+	if !ready || err != nil || math.Abs(previewDuration-3) > 0.1 {
+		t.Fatal("whole-program preview is incomplete")
+	}
+	wPreview := httptest.NewRecorder()
+	rPreview := httptest.NewRequest(http.MethodGet, "/api/v1/recordings/file/1?preview=1", nil)
+	rPreview.Header.Set("Range", "bytes=0-99")
+	a.recordingFileContent(wPreview, rPreview)
+	if wPreview.Code != 206 || wPreview.Body.Len() != 100 {
+		t.Fatal("whole preview Range failed")
+	}
 	key := strings.Repeat("b", 32)
 	wire := fmtNewsInput(key, 1, "manual", []newsPart{{Title: "新闻条目", Start: 0.35, End: 1.75}})
 	w := httptest.NewRecorder()

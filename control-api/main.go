@@ -2692,15 +2692,25 @@ func (a *app) previewPath(id int64, source string, sourceMod time.Time) (string,
 	if err := os.MkdirAll(root, 0o755); err != nil {
 		return "", false, err
 	}
-	// v3 prevents earlier long preview cache files from being reused after
-	// the bounded preview implementation is deployed.
-	dest := filepath.Join(root, fmt.Sprintf("v4-%d.mp4", id))
+	// v5 is a whole-program fast-start cache, never reuse old five-minute clips.
+	dest := filepath.Join(root, fmt.Sprintf("v5-%d.mp4", id))
 	if info, err := os.Stat(dest); err == nil && info.Size() > 0 && !info.ModTime().Before(sourceMod) {
+		_ = os.Chtimes(dest, time.Now(), time.Now())
 		return dest, true, nil
 	}
 	a.previewMu.Lock()
 	job := a.previewJobs[id]
 	if job == nil || !job.sourceMod.Equal(sourceMod) || job.status == "ready" {
+		pending := 0
+		for _, current := range a.previewJobs {
+			if current.status == "processing" {
+				pending++
+			}
+		}
+		if pending >= 4 {
+			a.previewMu.Unlock()
+			return "", false, errors.New("整期预览队列繁忙，请稍后重试")
+		}
 		job = &previewJob{status: "processing", sourceMod: sourceMod}
 		a.previewJobs[id] = job
 		go a.generatePreview(id, source, sourceMod, dest)
@@ -2725,9 +2735,21 @@ func (a *app) generatePreview(id int64, source string, sourceMod time.Time, dest
 	// the MP4 muxer before the completed file is atomically renamed.
 	tmp := strings.TrimSuffix(dest, filepath.Ext(dest)) + ".tmp" + filepath.Ext(dest)
 	_ = os.Remove(tmp)
-	// Preview is intentionally a short clip. Rewrapping the entire recording
-	// doubled NFS I/O and cache usage, which could starve the control service.
-	cmd := exec.CommandContext(ctx, "ffmpeg", "-hide_banner", "-loglevel", "error", "-y", "-i", source, "-t", "300", "-map", "0", "-c", "copy", "-movflags", "+faststart", tmp)
+	input, inputErr := os.Stat(source)
+	if inputErr == nil {
+		inputErr = prepareFullPreview(filepath.Dir(dest), input.Size())
+	}
+	if inputErr != nil {
+		a.previewMu.Lock()
+		if job := a.previewJobs[id]; job != nil && job.sourceMod.Equal(sourceMod) {
+			job.status, job.errText = "error", "整期预览缓存空间不足或录制不可读"
+		}
+		a.previewMu.Unlock()
+		return
+	}
+	// Only one bounded worker; reuse a local cache. Copy codecs, not CPU-heavy
+	// re-encoding. Fast-start metadata enables byte-range seeking anywhere.
+	cmd := exec.CommandContext(ctx, "ffmpeg", "-hide_banner", "-loglevel", "error", "-nostdin", "-y", "-i", source, "-map", "0:v:0?", "-map", "0:a:0?", "-c", "copy", "-movflags", "+faststart", tmp)
 	if output, err := cmd.CombinedOutput(); err != nil {
 		_ = os.Remove(tmp)
 		a.previewMu.Lock()

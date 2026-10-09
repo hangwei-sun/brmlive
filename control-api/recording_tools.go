@@ -282,7 +282,7 @@ func (a *app) createNewsJob(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	dir, err := a.newsDir(input.Owner, input.Key)
-	if err != nil || input.RecordingID < 1 || (input.Kind != "manual" && input.Kind != "smart" && input.Kind != "preview") {
+	if err != nil || input.RecordingID < 1 || (input.Kind != "manual" && input.Kind != "smart") {
 		badRequest(w, "拆条参数无效")
 		return
 	}
@@ -375,10 +375,6 @@ func (a *app) createNewsJob(w http.ResponseWriter, r *http.Request) {
 		}
 	} else if err := validateNewsParts(input.Parts, duration); err != nil {
 		badRequest(w, err.Error())
-		return
-	}
-	if input.Kind == "preview" && (len(input.Parts) != 1 || input.Parts[0].End-input.Parts[0].Start > 300) {
-		badRequest(w, "兼容预览最多 5 分钟")
 		return
 	}
 	if err := os.MkdirAll(dir, 0700); err != nil {
