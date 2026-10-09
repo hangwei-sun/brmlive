@@ -75,7 +75,7 @@ class EncoderTest(unittest.TestCase):
         p = pathlib.Path(self.tmp.name)/self.key
         (p/'source').write_bytes(b'test')
         class Process:
-            stdout = iter(['out_time_us=1000000\n', 'progress=end\n'])
+            stdout = iter(['out_time_us=N/A\n', 'out_time_us=1000000\n', 'progress=end\n'])
             def wait(self): return 0
             def poll(self): return 0
             def kill(self): pass

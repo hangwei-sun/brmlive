@@ -158,7 +158,12 @@ class Manager:
                     if line.startswith("out_time_us=") and time.monotonic()-last >= 0.8:
                         last = time.monotonic()
                         self.room()
-                        encoded = max(0, min(length, int(line.split("=", 1)[1])/1e6))
+                        # FFmpeg may report N/A before the first output packet,
+                        # particularly after an accurate seek into AAC audio.
+                        try:
+                            encoded = max(0, min(length, int(line.split("=", 1)[1])/1e6))
+                        except ValueError:
+                            continue
                         self.update(key, progress=min(99, int((done+encoded)/total*100)),
                                     stage=f"NVENC {i+1}/{len(j['spec']['parts'])}")
                 if proc.wait() != 0:
@@ -170,8 +175,8 @@ class Manager:
                 files = self.get(key)["files"]+[name]
                 self.update(key, files=files, progress=min(99, int(done/total*100)))
             self.update(key, state="completed", progress=100, stage="Ready", expires=time.time()+3600)
-        except Exception:
-            self.update(key, state="cancelled" if self.stops[key].is_set() else "failed", stage="Hardware export failed; resubmit")
+        except Exception as error:
+            self.update(key, state="cancelled" if self.stops[key].is_set() else "failed", stage="Hardware export failed; resubmit", errorType=type(error).__name__)
         finally:
             if timer:
                 timer.cancel()
