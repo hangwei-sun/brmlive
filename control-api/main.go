@@ -303,6 +303,7 @@ func main() {
 	mux.HandleFunc("/api/v1/status", a.auth(a.status))
 	mux.HandleFunc("/api/v1/splitter/status", a.auth(a.splitterStatus))
 	mux.HandleFunc("/api/v1/recordings", a.auth(a.recordings))
+	mux.HandleFunc("/api/v1/recordings/storage", a.auth(a.recordingStorage))
 	mux.HandleFunc("/api/v1/recordings/preview/", a.auth(a.recordingPreviewStatus))
 	mux.HandleFunc("/api/v1/recordings/", a.auth(a.recordingFileContent))
 	mux.HandleFunc("/api/v1/executions", a.auth(a.executions))
