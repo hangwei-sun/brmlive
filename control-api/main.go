@@ -304,6 +304,9 @@ func main() {
 	mux.HandleFunc("/api/v1/splitter/status", a.auth(a.splitterStatus))
 	mux.HandleFunc("/api/v1/recordings", a.auth(a.recordings))
 	mux.HandleFunc("/api/v1/recordings/storage", a.auth(a.recordingStorage))
+	mux.HandleFunc("/api/v1/recordings/info/", a.auth(a.recordingInfo))
+	mux.HandleFunc("/api/v1/recordings/jobs", a.auth(a.recordingJobs))
+	mux.HandleFunc("/api/v1/recordings/jobs/", a.auth(a.recordingJobs))
 	mux.HandleFunc("/api/v1/recordings/preview/", a.auth(a.recordingPreviewStatus))
 	mux.HandleFunc("/api/v1/recordings/", a.auth(a.recordingFileContent))
 	mux.HandleFunc("/api/v1/executions", a.auth(a.executions))
@@ -953,6 +956,9 @@ func normalizeRole(role string) string {
 
 func recordingRouteAllowed(r *http.Request) bool {
 	path := r.URL.Path
+	if path == "/api/v1/recordings/jobs" && (r.Method == http.MethodPost || r.Method == http.MethodGet) {
+		return true
+	}
 	if path == "/api/v1/auth/me" && r.Method == http.MethodGet {
 		return true
 	}

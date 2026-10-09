@@ -1,0 +1,17 @@
+services:
+  news-asr:
+    build: .
+    restart: unless-stopped
+    gpus: all
+    ports:
+      - "${ASR_BIND:-127.0.0.1}:8091:8091"
+    environment:
+      ASR_API_KEY: ${ASR_API_KEY:?Set a private ASR API key}
+      ASR_MODEL: ${ASR_MODEL:-large-v3}
+      ASR_DEVICE: cuda
+      ASR_COMPUTE_TYPE: int8_float16
+      ASR_MODEL_CACHE: /models
+    volumes:
+      - ./models:/models
+    tmpfs:
+      - /tmp:size=64m,mode=1777
