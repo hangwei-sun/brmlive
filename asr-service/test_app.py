@@ -4,6 +4,7 @@ import os
 import types
 import unittest
 import wave
+import sys
 from unittest.mock import patch
 
 from fastapi.testclient import TestClient
@@ -21,7 +22,7 @@ def wav():
 
 class SpeechAdapterTest(unittest.TestCase):
     def setUp(self):
-        self.environment = patch.dict(os.environ, {"ASR_API_KEY": "test-only-key-not-a-real-secret-123"})
+        self.environment = patch.dict(os.environ, {"ASR_API_KEY": "test-only-key-not-a-real-secret-123", 'ASR_ENGINE': 'legacy', 'MEDIA_RESOURCE_ROOT': ''})
         self.environment.start()
         import app
         self.app = importlib.reload(app)
@@ -70,6 +71,56 @@ class SpeechAdapterTest(unittest.TestCase):
                                     files={"file": ("sample.wav", wav())}, data={"model": "large-v3"})
         self.assertEqual(response.status_code, 503)
         self.assertNotIn("private", response.text)
+
+    def batch_request(self, factory):
+        with patch.dict(os.environ, {'ASR_ENGINE': 'batched', 'ASR_BATCH_SIZE': '4'}), patch.dict(sys.modules, {
+                'faster_whisper': types.SimpleNamespace(BatchedInferencePipeline=factory)}):
+            return self.client.post('/v1/audio/transcriptions', headers=self.headers,
+                                    files={'file': ('sample.wav', wav())}, data={'model': 'large-v3'})
+
+    def test_batch_contract_and_fresh_pipeline(self):
+        instances = []
+        class Pipeline:
+            def __init__(inner, model): instances.append(inner)
+            def transcribe(inner, samples, **kwargs):
+                self.assertEqual(samples.dtype.name, 'float32')
+                self.assertEqual(len(samples), 16000)
+                self.assertEqual(kwargs['batch_size'], 4)
+                self.assertEqual(kwargs['beam_size'], 5)
+                self.assertTrue(kwargs['word_timestamps'])
+                self.assertFalse(kwargs['without_timestamps'])
+                return iter([types.SimpleNamespace(start=0, end=0.8, text='新闻', words=[
+                    types.SimpleNamespace(start=0.06, end=0.8, word='新闻')])]), None
+        for _ in range(2):
+            r = self.batch_request(Pipeline)
+            self.assertEqual(r.status_code, 200)
+            self.assertEqual(r.json()['segments'][0]['speech_start'], 0.06)
+            self.assertFalse(r.json()['timings']['fallback'])
+            self.assertIn('request_seconds', r.json()['timings'])
+        self.assertEqual(len(instances), 2)
+
+    def test_invalid_batch_timestamps_retry_legacy(self):
+        class Pipeline:
+            def __init__(self, model): pass
+            def transcribe(self, *args, **kwargs):
+                return iter([types.SimpleNamespace(start=0.9, end=0.1, text='bad')]), None
+        r = self.batch_request(Pipeline)
+        self.assertEqual(r.status_code, 200)
+        self.assertEqual(r.json()['segments'][0]['text'], '新闻正文')
+        self.assertTrue(r.json()['timings']['fallback'])
+
+    def test_lazy_batch_oom_retry_and_unrelated_error_sanitized(self):
+        for message, status in [('CUDA out of memory', 200), ('private driver path', 503)]:
+            class Pipeline:
+                def __init__(self, model): pass
+                def transcribe(self, *args, **kwargs):
+                    def rows():
+                        raise RuntimeError(message)
+                        yield
+                    return rows(), None
+            r = self.batch_request(Pipeline)
+            self.assertEqual(r.status_code, status)
+            self.assertNotIn('private', r.text)
 
 
 if __name__ == "__main__":

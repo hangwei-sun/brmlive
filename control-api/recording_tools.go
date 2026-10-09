@@ -27,20 +27,21 @@ type newsPart struct {
 	End   float64 `json:"end"`
 }
 type newsJob struct {
-	Key         string     `json:"key"`
-	Owner       int64      `json:"ownerId"`
-	RecordingID int64      `json:"recordingId"`
-	Kind        string     `json:"kind"`
-	State       string     `json:"state"`
-	Progress    int        `json:"progress"`
-	Message     string     `json:"message,omitempty"`
-	Stage       string     `json:"stage,omitempty"`
-	Encoder     string     `json:"encoder,omitempty"`
-	Parts       []newsPart `json:"parts"`
-	Files       []string   `json:"files"`
-	CreatedAt   int64      `json:"createdAt"`
-	ExpiresAt   int64      `json:"expiresAt"`
-	RequestHash string     `json:"requestHash,omitempty"`
+	Key         string             `json:"key"`
+	Owner       int64              `json:"ownerId"`
+	RecordingID int64              `json:"recordingId"`
+	Kind        string             `json:"kind"`
+	State       string             `json:"state"`
+	Progress    int                `json:"progress"`
+	Message     string             `json:"message,omitempty"`
+	Stage       string             `json:"stage,omitempty"`
+	Encoder     string             `json:"encoder,omitempty"`
+	Parts       []newsPart         `json:"parts"`
+	Files       []string           `json:"files"`
+	CreatedAt   int64              `json:"createdAt"`
+	ExpiresAt   int64              `json:"expiresAt"`
+	RequestHash string             `json:"requestHash,omitempty"`
+	Timings     map[string]float64 `json:"timings,omitempty"`
 }
 type newsJobInput struct {
 	Key         string           `json:"key"`
@@ -434,12 +435,24 @@ func (a *app) runNewsJob(dir string, job newsJob, smart *newsSmartConfig, source
 		return
 	}
 	if job.Kind == "smart" {
-		parts, err := analyseNews(ctx, source, dir, duration, *smart, func(progress int) { job.Progress = progress; save() })
+		job.Timings = map[string]float64{}
+		parts, err := analyseNewsMeasured(ctx, source, dir, duration, *smart, func(progress int) {
+			job.Progress = progress
+			job.Stage = "音频提取与语音转写"
+			if progress >= 85 {
+				job.Stage = "新闻语义分析"
+			}
+			if progress >= 90 {
+				job.Stage = "画面边界校准"
+			}
+			save()
+		}, func(stage string, seconds float64) { job.Timings[stage] += seconds })
 		if err != nil {
 			fail(err.Error())
 			return
 		}
 		job.Parts, job.State, job.Progress = parts, "completed", 100
+		job.Stage = "识别完成，请确认新闻条目"
 		save()
 		return
 	}

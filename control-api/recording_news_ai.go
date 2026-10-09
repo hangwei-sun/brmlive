@@ -12,8 +12,6 @@ import (
 	"net/http"
 	"net/url"
 	"os"
-	"os/exec"
-	"path/filepath"
 	"strings"
 	"time"
 )
@@ -217,29 +215,48 @@ func validateNewsGroups(groups []newsGroup, sentences []newsSentence) ([]newsPar
 	return parts, nil
 }
 func analyseNews(ctx context.Context, source, dir string, duration float64, config newsSmartConfig, progress func(int)) ([]newsPart, error) {
+	return analyseNewsMeasured(ctx, source, dir, duration, config, progress, func(string, float64) {})
+}
+
+func analyseNewsMeasured(ctx context.Context, source, dir string, duration float64, config newsSmartConfig, progress func(int), measure func(string, float64)) ([]newsPart, error) {
 	sentences := []newsSentence{}
 	client := newsHTTP()
-	for offset := 0.0; offset < duration; offset += 600 {
-		length := min(600.0, duration-offset)
-		path := filepath.Join(dir, "transcription.wav")
-		cmd := exec.CommandContext(ctx, "ffmpeg", "-hide_banner", "-loglevel", "error", "-nostdin", "-y", "-ss", fmt.Sprintf("%.3f", offset), "-i", source, "-t", fmt.Sprintf("%.3f", length), "-vn", "-ac", "1", "-ar", "16000", "-c:a", "pcm_s16le", path)
-		if err := cmd.Run(); err != nil {
-			_ = os.Remove(path)
-			return nil, errors.New("新闻音频提取失败")
-		}
-		rows, err := transcribeNews(ctx, client, config, path, offset, length)
-		_ = os.Remove(path)
+	root, err := os.MkdirTemp(dir, "asr-audio-")
+	if err != nil {
+		return nil, errors.New("新闻音频准备失败")
+	}
+	defer os.RemoveAll(root) // Only this job's freshly created temporary directory.
+	started := time.Now()
+	err = pipelineNewsAudio(ctx, duration, func(ctx context.Context, offset, length float64) (string, error) {
+		path, err := prepareNewsAudio(ctx, source, root, offset, length)
 		if err != nil {
-			return nil, err
+			return path, errors.New("新闻音频提取失败")
+		}
+		return path, nil
+	}, func(chunk newsAudioChunk) error {
+		measure("audio_extract_seconds", chunk.extractSeconds)
+		asrStarted := time.Now()
+		rows, err := transcribeNews(ctx, client, config, chunk.path, chunk.offset, chunk.length)
+		measure("asr_roundtrip_seconds", time.Since(asrStarted).Seconds())
+		if err != nil {
+			return err
 		}
 		sentences = append(sentences, rows...)
-		progress(int((offset + length) / duration * 80))
-	}
-	progress(85)
-	parts, err := groupNews(ctx, client, config, sentences)
+		progress(int((chunk.offset + chunk.length) / duration * 80))
+		return nil
+	})
+	measure("audio_asr_wall_seconds", time.Since(started).Seconds())
 	if err != nil {
 		return nil, err
 	}
+	progress(85)
+	started = time.Now()
+	parts, err := groupNews(ctx, client, config, sentences)
+	measure("semantic_seconds", time.Since(started).Seconds())
+	if err != nil {
+		return nil, err
+	}
+	started = time.Now()
 	for i := range parts {
 		if ctx.Err() != nil {
 			return nil, ctx.Err()
@@ -251,5 +268,6 @@ func analyseNews(ctx context.Context, source, dir string, duration float64, conf
 		parts[i].Start = alignNewsPicture(ctx, source, parts[i].Start, parts[i].End, floor)
 		progress(90 + (i+1)*9/len(parts))
 	}
+	measure("boundary_seconds", time.Since(started).Seconds())
 	return parts, nil
 }

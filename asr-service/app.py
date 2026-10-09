@@ -4,6 +4,9 @@ import os
 import tempfile
 import threading
 import wave
+import math
+import time
+import logging
 from contextlib import asynccontextmanager
 
 from fastapi import Depends, FastAPI, File, Form, Header, HTTPException, UploadFile
@@ -20,6 +23,7 @@ async def lifespan(app):
     global _model
     if len(KEY) < 24:
         raise RuntimeError("ASR_API_KEY must contain at least 24 characters")
+    inference_settings()  # Fail at startup, not halfway through a news task.
     if _model is None:
         from faster_whisper import WhisperModel
         _model = WhisperModel(
@@ -57,7 +61,8 @@ def authorize(authorization: str = Header(default="")):
 
 @app.get("/health", dependencies=[Depends(authorize)])
 def health():
-    return {"ready": _model is not None, "model": MODEL}
+    engine, batch = inference_settings()
+    return {"ready": _model is not None, "model": MODEL, "engine": engine, "batch_size": batch}
 
 
 @app.post("/v1/audio/transcriptions", dependencies=[Depends(authorize)])
@@ -69,8 +74,10 @@ def transcribe(
         raise HTTPException(422, "Use the configured model, verbose_json and zh")
     if _model is None:
         raise HTTPException(503, "Speech model is not ready")
+    started = time.monotonic()
     if not _slot.acquire(timeout=120):
         raise HTTPException(429, "Speech worker is busy")
+    slot_acquired = time.monotonic()
     path = None
     try:
         with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as target:
@@ -90,31 +97,93 @@ def transcribe(
                     raise ValueError("Audio chunk must be at most 10 minutes")
         except (wave.Error, EOFError, ValueError):
             raise HTTPException(422, "Use mono 16 kHz PCM WAV, at most 10 minutes") from None
-        segments, _ = _model.transcribe(
-            path, language="zh", beam_size=5, vad_filter=True,
-            condition_on_previous_text=False, word_timestamps=True,
-            initial_prompt="以下是电视新闻节目，包含主播导语、记者报道、采访和节目结束语。请使用简体中文转写。",
-        )
-        rows = []
-        for item in segments:
-            if not item.text.strip():
-                continue
-            row = {"start": round(item.start, 3), "end": round(item.end, 3), "text": item.text.strip()}
-            # Keep sentence boundaries for semantic grouping, but expose the
-            # first spoken word separately. Never retain the word transcript.
-            for word in (getattr(item, "words", None) or []):
-                if word.word.strip() and word.end > word.start and item.start <= word.start < item.end:
-                    row["speech_start"] = round(word.start, 3)
-                    break
-            rows.append(row)
-        return {"text": "".join(row["text"] for row in rows), "language": "zh", "duration": duration, "segments": rows}
+        validated = time.monotonic()
+        result = recognise(path, duration)
+        result['timings']['queue_seconds'] = round(slot_acquired - started, 3)
+        result['timings']['upload_validate_seconds'] = round(validated - slot_acquired, 3)
+        result['timings']['request_seconds'] = round(time.monotonic() - started, 3)
+        # Operational metrics only: no audio, transcript, path or credential.
+        logging.getLogger('brm.asr').info('ASR metrics %s', result['timings'])
+        return result
     except HTTPException:
         raise
     except Exception:
-        # Model errors must not expose local paths, input text, or credentials.
         raise HTTPException(503, "Speech transcription failed") from None
     finally:
         file.file.close()
         if path:
             os.unlink(path)
         _slot.release()
+
+
+def inference_settings():
+    engine = os.environ.get('ASR_ENGINE', 'batched')
+    batch = int(os.environ.get('ASR_BATCH_SIZE', '4'))
+    if engine not in ('legacy', 'batched') or not 1 <= batch <= 8:
+        raise ValueError('Invalid ASR inference settings')
+    return engine, batch
+
+
+def sentence_rows(segments, duration):
+    rows, last = [], 0.0
+    for item in segments:
+        if not item.text.strip():
+            continue
+        if (not math.isfinite(item.start) or not math.isfinite(item.end)
+                or item.start < last or item.end <= item.start or item.end > duration + 1):
+            raise ValueError('Invalid ASR timestamp sequence')
+        row = {'start': round(item.start, 3), 'end': round(item.end, 3), 'text': item.text.strip()}
+        if row['end'] <= row['start']:
+            raise ValueError('Invalid rounded ASR timestamp')
+        last = item.end
+        for word in (getattr(item, 'words', None) or []):
+            if (word.word.strip() and math.isfinite(word.start) and math.isfinite(word.end)
+                    and word.end > word.start and item.start <= word.start < item.end):
+                row['speech_start'] = round(word.start, 3)
+                break
+        rows.append(row)
+    return rows
+
+
+def recognise(path, duration):
+    import numpy as np
+    started = time.monotonic()
+    # Input is already validated mono PCM16; avoid an additional PyAV decoder.
+    with wave.open(path, 'rb') as audio:
+        samples = np.frombuffer(audio.readframes(audio.getnframes()), dtype='<i2').astype(np.float32) / 32768.0
+    prepared = time.monotonic()
+    engine, batch = inference_settings()
+    options = dict(language='zh', beam_size=5, vad_filter=True,
+                   condition_on_previous_text=False, word_timestamps=True,
+                   initial_prompt='以下是电视新闻节目，包含主播导语、记者报道、采访和节目结束语。请使用简体中文转写。')
+    fallback = False
+    if engine == 'batched':
+        from faster_whisper import BatchedInferencePipeline
+        # Pipeline holds word-alignment state. Never reuse it across requests.
+        pipeline = BatchedInferencePipeline(_model)
+        try:
+            segments, _ = pipeline.transcribe(samples, batch_size=batch, without_timestamps=False,
+                                              vad_parameters={'min_silence_duration_ms': 2000}, **options)
+            rows = sentence_rows(segments, duration)
+        except (ValueError, RuntimeError) as error:
+            # Invalid alignment/OOM may use the proven path once, never discard
+            # a presenter's opening words or return a partially collected batch.
+            if not isinstance(error, ValueError) and 'out of memory' not in str(error).lower():
+                raise
+            fallback = True
+            pipeline = None
+            segments = None
+            error.__traceback__ = None
+            import gc
+            gc.collect()
+            segments, _ = _model.transcribe(samples, **options)
+            rows = sentence_rows(segments, duration)
+    else:
+        segments, _ = _model.transcribe(samples, **options)
+        rows = sentence_rows(segments, duration)
+    timings = {'prepare_seconds': round(prepared-started, 3),
+               'inference_seconds': round(time.monotonic()-prepared, 3),
+               'audio_seconds': round(duration, 3), 'engine': engine,
+               'batch_size': batch if engine == 'batched' else 1, 'fallback': fallback}
+    return {'text': ''.join(row['text'] for row in rows), 'language': 'zh',
+            'duration': duration, 'segments': rows, 'timings': timings}
