@@ -23,7 +23,7 @@ async def lifespan(app):
     if _model is None:
         from faster_whisper import WhisperModel
         _model = WhisperModel(
-            MODEL, device=os.environ.get("ASR_DEVICE", "cuda"),
+            os.environ.get("ASR_MODEL_PATH", MODEL), device=os.environ.get("ASR_DEVICE", "cuda"),
             compute_type=os.environ.get("ASR_COMPUTE_TYPE", "int8_float16"),
             download_root=os.environ.get("ASR_MODEL_CACHE", "/models"),
             cpu_threads=4, num_workers=1,
