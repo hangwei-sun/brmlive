@@ -1,0 +1,12 @@
+# Per-service systemd drop-in candidate; NOT automatically enabled.
+# Provision a LOCAL /var/lib/brm-media-runtime directory with setgid 2770 and
+# a shared brm-media-runtime group. Add each service user to this group.
+# Verify all four services use this SAME module and directory before enabling.
+[Service]
+SupplementaryGroups=brm-media-runtime
+Environment=MEDIA_RUNTIME_PATH=/opt/brm-media-runtime
+Environment=MEDIA_RESOURCE_ROOT=/var/lib/brm-media-runtime
+UMask=0007
+ReadWritePaths=/var/lib/brm-media-runtime
+KillMode=control-group
+# CPU budget admission is not a VRAM guarantee: monitor all three workloads.

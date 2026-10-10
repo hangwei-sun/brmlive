@@ -4,8 +4,10 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net"
 	"net/http"
@@ -63,10 +65,41 @@ func exportNewsGPU(ctx context.Context, base, token, source, dir string, job *ne
 	if err != nil {
 		return errors.New("录制文件不可读")
 	}
-	wire, _ := json.Marshal(map[string]any{"parts": job.Parts, "duration": duration, "size": info.Size()})
+	spec := map[string]any{"parts": job.Parts, "duration": duration, "size": info.Size()}
+	if os.Getenv("NEWS_SOURCE_CACHE") == "1" {
+		digest := sha256.New()
+		buffer := make([]byte, 1024*1024)
+		for {
+			if ctx.Err() != nil {
+				return ctx.Err()
+			}
+			n, readErr := file.Read(buffer)
+			if n > 0 {
+				_, _ = digest.Write(buffer[:n])
+			}
+			if readErr == io.EOF {
+				break
+			}
+			if readErr != nil {
+				return errors.New("录制内容校验失败")
+			}
+		}
+		if _, err = file.Seek(0, io.SeekStart); err != nil {
+			return err
+		}
+		spec["sourceSha256"] = fmt.Sprintf("%x", digest.Sum(nil))
+	}
+	wire, _ := json.Marshal(spec)
 	resp, err := request(ctx, http.MethodPost, endpoint, bytes.NewReader(wire), int64(len(wire)))
 	if err != nil {
 		return err
+	}
+	var created struct {
+		SourceCached bool `json:"sourceCached"`
+	}
+	if err = json.NewDecoder(io.LimitReader(resp.Body, 65536)).Decode(&created); err != nil {
+		resp.Body.Close()
+		return errors.New("GPU 导出服务状态无效")
 	}
 	resp.Body.Close()
 	defer func() {
@@ -79,11 +112,13 @@ func exportNewsGPU(ctx context.Context, base, token, source, dir string, job *ne
 	job.Encoder, job.Stage, job.Progress = "nvenc", "正在传输录制文件到 GPU 节点", 1
 	save()
 	// Stream the original once per task; never load a whole recording in RAM.
-	resp, err = request(ctx, http.MethodPut, endpoint+"/source", file, info.Size())
-	if err != nil {
-		return err
+	if !created.SourceCached {
+		resp, err = request(ctx, http.MethodPut, endpoint+"/source", file, info.Size())
+		if err != nil {
+			return err
+		}
+		resp.Body.Close()
 	}
-	resp.Body.Close()
 	current, err := os.Stat(source)
 	if err != nil || current.Size() != info.Size() || !current.ModTime().Equal(info.ModTime()) {
 		return errors.New("录制文件已变化，请重新提交")
@@ -96,9 +131,10 @@ func exportNewsGPU(ctx context.Context, base, token, source, dir string, job *ne
 			return err
 		}
 		var status struct {
-			State    string `json:"state"`
-			Progress int    `json:"progress"`
-			Stage    string `json:"stage"`
+			State    string             `json:"state"`
+			Progress int                `json:"progress"`
+			Stage    string             `json:"stage"`
+			Timings  map[string]float64 `json:"timings"`
 		}
 		err = json.NewDecoder(io.LimitReader(resp.Body, 65536)).Decode(&status)
 		resp.Body.Close()
@@ -112,6 +148,14 @@ func exportNewsGPU(ctx context.Context, base, token, source, dir string, job *ne
 		}
 		if status.State == "failed" || status.State == "cancelled" {
 			return errors.New("GPU 硬件导出失败，请联系管理员检查编码服务")
+		}
+		if job.Timings == nil {
+			job.Timings = map[string]float64{}
+		}
+		for _, key := range []string{"resource_queue_seconds", "encode_seconds"} {
+			if value, ok := status.Timings[key]; ok && value >= 0 && value < 86400 {
+				job.Timings["gpu_"+key] = value
+			}
 		}
 		if status.State == "running" {
 			job.Stage = "GPU 硬件编码 · " + status.Stage

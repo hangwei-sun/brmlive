@@ -219,6 +219,12 @@ func analyseNews(ctx context.Context, source, dir string, duration float64, conf
 }
 
 func analyseNewsMeasured(ctx context.Context, source, dir string, duration float64, config newsSmartConfig, progress func(int), measure func(string, float64)) ([]newsPart, error) {
+	return cachedNewsAnalysis(ctx, source, duration, config, progress, measure, func() ([]newsPart, error) {
+		return analyseNewsUncachedMeasured(ctx, source, dir, duration, config, progress, measure)
+	})
+}
+
+func analyseNewsUncachedMeasured(ctx context.Context, source, dir string, duration float64, config newsSmartConfig, progress func(int), measure func(string, float64)) ([]newsPart, error) {
 	sentences := []newsSentence{}
 	client := newsHTTP()
 	root, err := os.MkdirTemp(dir, "asr-audio-")

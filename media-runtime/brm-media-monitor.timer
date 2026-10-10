@@ -1,0 +1,10 @@
+[Unit]
+Description=BRM media resource observations every minute
+
+[Timer]
+OnBootSec=1min
+OnUnitActiveSec=1min
+Unit=brm-media-monitor.service
+
+[Install]
+WantedBy=timers.target

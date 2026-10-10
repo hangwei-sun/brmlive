@@ -1,4 +1,6 @@
 import importlib
+import io
+import hashlib
 import os
 import pathlib
 import tempfile
@@ -12,7 +14,7 @@ from fastapi.testclient import TestClient
 class EncoderTest(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
-        self.env = patch.dict(os.environ, {"ENCODER_ROOT": self.tmp.name, "ENCODER_API_KEY": "test-only-encoder-key-0123456789", "ENCODER_ALLOWED_HOSTS": "testclient"})
+        self.env = patch.dict(os.environ, {"ENCODER_ROOT": self.tmp.name, "ENCODER_API_KEY": "test-only-encoder-key-0123456789", "ENCODER_ALLOWED_HOSTS": "testclient", 'MEDIA_RESOURCE_ROOT': '', 'ENCODER_PROFILE': 'legacy', 'ENCODER_DECODE': 'cpu'})
         self.env.start()
         import app
         self.module = importlib.reload(app)
@@ -75,7 +77,7 @@ class EncoderTest(unittest.TestCase):
         p = pathlib.Path(self.tmp.name)/self.key
         (p/'source').write_bytes(b'test')
         class Process:
-            stdout = iter(['out_time_us=N/A\n', 'out_time_us=1000000\n', 'progress=end\n'])
+            stdout = io.StringIO('out_time_us=N/A\nout_time_us=1000000\nprogress=end\n')
             def wait(self): return 0
             def poll(self): return 0
             def kill(self): pass
@@ -92,6 +94,74 @@ class EncoderTest(unittest.TestCase):
         self.assertEqual(j['progress'], 100)
         self.assertEqual(j['files'], ['news-01.mp4'])
         self.assertFalse((p/'source').exists())
+        self.assertIn('encode_seconds', j['timings'])
+
+    def test_candidate_flags_default_safe_and_validated(self):
+        args = self.module.encode_args('source', 'output', 0.04, 1)
+        self.assertNotIn('-hwaccel', args)
+        self.assertEqual(args[args.index('-cq')+1], '20')
+        with patch.dict(os.environ, {'ENCODER_PROFILE': 'capped', 'ENCODER_DECODE': 'nvdec'}):
+            args = self.module.encode_args('source', 'output', 0.04, 1)
+            self.assertEqual(args[args.index('-hwaccel')+1], 'cuda')
+            self.assertIn('-maxrate', args)
+            self.assertNotIn('-pix_fmt', args)
+        with patch.dict(os.environ, {'ENCODER_DECODE': 'invalid'}):
+            with self.assertRaises(ValueError):
+                self.module.encode_args('source', 'output', 0, 1)
+
+    def test_cleanup_does_not_delete_active_cancelled_job(self):
+        self.create()
+        m = self.module.manager
+        m.active.add(self.key)
+        m.update(self.key, state='cancelled', expires=0)
+        m.clean()
+        self.assertTrue((pathlib.Path(self.tmp.name)/self.key).exists())
+        m.active.discard(self.key)
+        m.clean()
+        self.assertFalse((pathlib.Path(self.tmp.name)/self.key).exists())
+
+    def test_shared_source_cache_is_hash_verified_and_skips_second_upload(self):
+        spec = {**self.spec, 'sourceSha256': hashlib.sha256(b'test').hexdigest()}
+        with patch.dict(os.environ, {'ENCODER_SOURCE_CACHE': '1'}), patch.object(self.module.manager.pool, 'submit') as submit:
+            self.create(spec=spec)
+            r = self.client.put('/v1/exports/'+self.key+'/source', headers=self.headers, content=b'test')
+            self.assertEqual(r.status_code, 200)
+            r = self.create('b'*32, spec)
+            self.assertTrue(r.json()['sourceCached'])
+            self.assertEqual(submit.call_count, 2)
+            self.assertEqual((pathlib.Path(self.tmp.name)/('b'*32)/'source').read_bytes(), b'test')
+            self.create('c'*32, {**spec, 'sourceSha256': 'd'*64})
+            r = self.client.put('/v1/exports/'+('c'*32)+'/source', headers=self.headers, content=b'test')
+            self.assertEqual(r.status_code, 400)
+            self.assertFalse((pathlib.Path(self.tmp.name)/('c'*32)/'source').exists())
+
+    def test_restart_recovery_requires_complete_source_and_same_settings(self):
+        self.create()
+        p = pathlib.Path(self.tmp.name)/self.key
+        (p/'source').write_bytes(b'test')
+        self.module.manager.update(self.key, state='running')
+        with patch.dict(os.environ, {'ENCODER_RECOVER_ON_RESTART': '1'}), patch.object(self.module.concurrent.futures.ThreadPoolExecutor, 'submit') as submit:
+            recovered = self.module.Manager(pathlib.Path(self.tmp.name))
+            try:
+                self.assertEqual(recovered.get(self.key)['state'], 'queued')
+                submit.assert_called_once()
+                self.assertTrue((p/'source').exists())
+            finally: recovered.pool.shutdown()
+
+    def test_quota_evicts_only_unreferenced_sources(self):
+        m = self.module.manager
+        cache = pathlib.Path(self.tmp.name)/'sources'; cache.mkdir()
+        old = cache/('a'*64); old.write_bytes(b'x'*2048)
+        with patch.object(self.module, 'QUOTA', 1024):
+            m.room()
+        self.assertFalse(old.exists())
+        live = cache/('b'*64); live.write_bytes(b'x'*2048)
+        import os
+        job = pathlib.Path(self.tmp.name)/('c'*32); job.mkdir()
+        os.link(live, job/'source')
+        with patch.object(self.module, 'QUOTA', 1024):
+            with self.assertRaises(self.module.HTTPException): m.room()
+        self.assertTrue(live.exists())
 
     def test_model_failure_never_discloses_inputs(self):
         self.create()

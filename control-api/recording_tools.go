@@ -436,6 +436,8 @@ func (a *app) runNewsJob(dir string, job newsJob, smart *newsSmartConfig, source
 	}
 	if job.Kind == "smart" {
 		job.Timings = map[string]float64{}
+		job.Stage = "音频提取与语音转写"
+		save()
 		parts, err := analyseNewsMeasured(ctx, source, dir, duration, *smart, func(progress int) {
 			job.Progress = progress
 			job.Stage = "音频提取与语音转写"

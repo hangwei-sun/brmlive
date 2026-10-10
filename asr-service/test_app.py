@@ -5,6 +5,9 @@ import types
 import unittest
 import wave
 import sys
+import contextlib
+import tempfile
+import pathlib
 from unittest.mock import patch
 
 from fastapi.testclient import TestClient
@@ -103,6 +106,39 @@ class SpeechAdapterTest(unittest.TestCase):
         with patch.dict(os.environ):
             os.environ.pop('ASR_ENGINE', None)
             self.assertEqual(self.app.inference_settings()[0], 'legacy')
+
+    def test_shared_admission_timeout_is_retryable_and_releases_slot(self):
+        @contextlib.contextmanager
+        def blocked():
+            raise TimeoutError('private resource path')
+            yield
+        with patch.object(self.app, 'resource_admission', blocked):
+            r = self.client.post('/v1/audio/transcriptions', headers=self.headers,
+                                 files={'file': ('sample.wav', wav())}, data={'model': 'large-v3'})
+        self.assertEqual(r.status_code, 429)
+        self.assertEqual(r.headers['retry-after'], '30')
+        self.assertNotIn('private', r.text)
+        self.assertTrue(self.app._slot.acquire(blocking=False))
+        self.app._slot.release()
+
+    def test_private_content_cache_reuses_asr_not_gpu_budget(self):
+        sys.path.insert(0, str(pathlib.Path(__file__).parent.parent/'media-runtime'))
+        from json_cache import JsonCache
+        calls = []
+        def recognize(*_):
+            calls.append(1)
+            return {'text': '新闻', 'language': 'zh', 'duration': 1,
+                    'segments': [{'start': 0, 'end': 0.8, 'text': '新闻'}],
+                    'timings': {'fallback': False}}
+        with tempfile.TemporaryDirectory() as root, patch.dict(os.environ, {'ASR_CACHE_REVISION': 'fixture-v1'}), patch.object(self.app, 'recognise', recognize):
+            self.app._cache = JsonCache(root)
+            for expected in (False, True):
+                r = self.client.post('/v1/audio/transcriptions', headers=self.headers,
+                                     files={'file': ('sample.wav', wav())}, data={'model': 'large-v3'})
+                self.assertEqual(r.status_code, 200)
+                self.assertEqual(r.json()['timings']['cache_hit'], expected)
+            self.assertEqual(len(calls), 1)
+        self.app._cache = None
 
     def test_invalid_batch_timestamps_retry_legacy(self):
         class Pipeline:

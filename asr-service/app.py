@@ -7,23 +7,39 @@ import wave
 import math
 import time
 import logging
-from contextlib import asynccontextmanager
+import sys
+from contextlib import asynccontextmanager, nullcontext
 
 from fastapi import Depends, FastAPI, File, Form, Header, HTTPException, UploadFile
 from fastapi.responses import JSONResponse
 
 _model = None
+_cache = None
 _slot = threading.BoundedSemaphore(1)
 MODEL = os.environ.get("ASR_MODEL", "large-v3")
 KEY = os.environ.get("ASR_API_KEY", "")
 
 
+def resource_admission():
+    if not os.environ.get('MEDIA_RESOURCE_ROOT'):
+        return nullcontext(None)
+    sys.path.insert(0, os.environ.get('MEDIA_RUNTIME_PATH', '/opt/brm-media-runtime'))
+    from resource_gate import admission
+    return admission('asr', timeout=110)
+
+
 @asynccontextmanager
 async def lifespan(app):
-    global _model
+    global _model, _cache
     if len(KEY) < 24:
         raise RuntimeError("ASR_API_KEY must contain at least 24 characters")
     inference_settings()  # Fail at startup, not halfway through a news task.
+    if os.environ.get('ASR_CACHE_ROOT'):
+        if not os.environ.get('ASR_CACHE_REVISION'):
+            raise RuntimeError('ASR cache requires an immutable model/prompt revision')
+        sys.path.insert(0, os.environ.get('MEDIA_RUNTIME_PATH', '/opt/brm-media-runtime'))
+        from json_cache import JsonCache
+        _cache = JsonCache(os.environ['ASR_CACHE_ROOT'])
     if _model is None:
         from faster_whisper import WhisperModel
         _model = WhisperModel(
@@ -32,7 +48,37 @@ async def lifespan(app):
             download_root=os.environ.get("ASR_MODEL_CACHE", "/models"),
             cpu_threads=4, num_workers=1,
         )
-    yield
+    stop = threading.Event()
+    def clean_cache():
+        while not stop.wait(60):
+            if _cache is not None:
+                try: _cache.clean()
+                except OSError: logging.getLogger('brm.asr').warning('ASR cache cleanup failed')
+    cleaner = threading.Thread(target=clean_cache, daemon=True)
+    cleaner.start()
+    try:
+        yield
+    finally:
+        stop.set(); cleaner.join(timeout=5)
+
+
+def valid_cached_result(cached, duration):
+    if not isinstance(cached, dict) or cached.get('duration') != duration or not isinstance(cached.get('text'), str):
+        return False
+    rows = cached.get('segments')
+    if not isinstance(rows, list) or not 0 < len(rows) <= 2000: return False
+    last = 0
+    for row in rows:
+        if not isinstance(row, dict): return False
+        start, end, text = row.get('start'), row.get('end'), row.get('text')
+        if (isinstance(start, bool) or isinstance(end, bool) or not isinstance(start, (int, float))
+                or not isinstance(end, (int, float)) or not math.isfinite(start) or not math.isfinite(end)
+                or start < last or end <= start or end > duration+1 or not isinstance(text, str) or not text.strip()):
+            return False
+        speech = row.get('speech_start', start)
+        if not isinstance(speech, (int, float)) or not math.isfinite(speech) or not start <= speech < end: return False
+        last = end
+    return cached['text'] == ''.join(row['text'] for row in rows)
 
 
 app = FastAPI(lifespan=lifespan, docs_url=None, redoc_url=None, openapi_url=None)
@@ -98,7 +144,33 @@ def transcribe(
         except (wave.Error, EOFError, ValueError):
             raise HTTPException(422, "Use mono 16 kHz PCM WAV, at most 10 minutes") from None
         validated = time.monotonic()
-        result = recognise(path, duration)
+        key = None
+        result = None
+        if _cache is not None:
+            engine, batch = inference_settings()
+            revision = '|'.join((os.environ['ASR_CACHE_REVISION'], MODEL,
+                                 os.environ.get('ASR_COMPUTE_TYPE', 'int8_float16'), engine, str(batch), 'sentence-v2'))
+            key = _cache.key(path, revision)
+            cached = _cache.get(key)
+            if valid_cached_result(cached, duration):
+                result = cached
+                result['timings'] = {'prepare_seconds': 0, 'inference_seconds': 0, 'audio_seconds': duration,
+                                     'engine': engine, 'batch_size': batch if engine == 'batched' else 1, 'fallback': False}
+        resource_wait_started = time.monotonic()
+        try:
+            resource_acquired = resource_wait_started
+            cache_hit = result is not None
+            if not cache_hit:
+                with resource_admission():
+                    resource_acquired = time.monotonic()
+                    result = recognise(path, duration)
+                if key is not None and not result['timings']['fallback']:
+                    try: _cache.put(key, {k: result[k] for k in ('text', 'language', 'duration', 'segments')})
+                    except OSError: logging.getLogger('brm.asr').warning('ASR cache write failed')
+        except TimeoutError:
+            raise HTTPException(429, 'Shared media queue timed out', headers={'Retry-After': '30'}) from None
+        result['timings']['resource_queue_seconds'] = round(resource_acquired-resource_wait_started, 3)
+        result['timings']['cache_hit'] = cache_hit
         result['timings']['queue_seconds'] = round(slot_acquired - started, 3)
         result['timings']['upload_validate_seconds'] = round(validated - slot_acquired, 3)
         result['timings']['request_seconds'] = round(time.monotonic() - started, 3)

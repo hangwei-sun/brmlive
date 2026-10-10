@@ -1,0 +1,15 @@
+[Unit]
+Description=BRM private media observation snapshot
+
+[Service]
+Type=oneshot
+User=REVIEWED_MONITOR_USER
+Group=brm-media-runtime
+ExecStart=REVIEWED_PYTHON /opt/brm-media-runtime/monitor.py --disk system:/ --disk data:/data --gate-root /var/lib/brm-media-runtime --output /var/lib/brm-media-runtime/monitor.json
+# On the media/control node, add --recording-db REVIEWED_CONTROL_DATABASE.
+UMask=0007
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/brm-media-runtime
+TimeoutStartSec=15
