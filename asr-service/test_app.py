@@ -99,6 +99,11 @@ class SpeechAdapterTest(unittest.TestCase):
             self.assertIn('request_seconds', r.json()['timings'])
         self.assertEqual(len(instances), 2)
 
+    def test_default_engine_remains_proven_legacy(self):
+        with patch.dict(os.environ):
+            os.environ.pop('ASR_ENGINE', None)
+            self.assertEqual(self.app.inference_settings()[0], 'legacy')
+
     def test_invalid_batch_timestamps_retry_legacy(self):
         class Pipeline:
             def __init__(self, model): pass
@@ -126,6 +131,25 @@ class SpeechAdapterTest(unittest.TestCase):
             types.SimpleNamespace(start=0, end=1, word='闻。')])
         rows = self.app.sentence_rows(iter([segment]), 1, split_sentences=True)
         self.assertEqual(rows, [{'start': 0, 'end': 1, 'text': '新闻。', 'speech_start': 0}])
+
+    def test_batch_float_precision_does_not_trigger_legacy_retry(self):
+        segments = [types.SimpleNamespace(start=0, end=0.3, text='新闻。', words=[
+            types.SimpleNamespace(start=0, end=0.3, word='新闻。')]),
+            types.SimpleNamespace(start=0.3-1e-9, end=0.8, text='报道。', words=[
+            types.SimpleNamespace(start=0.3-1e-9, end=0.8, word='报道。')])]
+        rows = self.app.sentence_rows(iter(segments), 1, split_sentences=True)
+        self.assertEqual(rows[1]['start'], rows[0]['end'])
+
+    def test_batch_uses_word_boundaries_not_coarse_segment_overlap(self):
+        segments = [types.SimpleNamespace(start=0, end=1, text='新闻。', words=[
+            types.SimpleNamespace(start=0.1, end=1, word='新闻。')]),
+            types.SimpleNamespace(start=0.8, end=2, text='报道。', words=[
+            types.SimpleNamespace(start=1.1, end=2, word='报道。')])]
+        rows = self.app.sentence_rows(iter(segments), 2, split_sentences=True)
+        self.assertEqual(rows[1]['start'], 1.1)
+        segments[1].words[0].start = 0.9
+        with self.assertRaises(ValueError):
+            self.app.sentence_rows(iter(segments), 2, split_sentences=True)
 
     def test_lazy_batch_oom_retry_and_unrelated_error_sanitized(self):
         for message, status in [('CUDA out of memory', 200), ('private driver path', 503)]:

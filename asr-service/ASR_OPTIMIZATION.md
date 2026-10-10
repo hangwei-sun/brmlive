@@ -1,11 +1,11 @@
-# ASR 优化：本地候选版本，尚未部署/实测加速
+# ASR 优化：流水线发布与批量模式验收
 
 本次只优化音频提取与ASR，不包含之前暂停的统一调度、源缓存、媒体网关等功能。
 
 ## 改动
 
 - faster-whisper固定1.2.1，避免接口行为随部署漂移。
-- ASR_ENGINE=batched（候选默认）、ASR_BATCH_SIZE=4（允许1—8）；ASR_ENGINE=legacy恢复原普通推理。批量和旧推理都保持beam5、中文提示、词级时间及VAD；批量明确without_timestamps=false、静音阈值2000ms。批量与旧实现不是数学等价，仍须真实新闻质量验收。
+- ASR_ENGINE=legacy（生产默认）、ASR_BATCH_SIZE=4（允许1—8）；batched仅用于显式开启的隔离验收。批量和旧推理都保持beam5、中文提示、词级时间及VAD；批量明确without_timestamps=false、静音阈值2000ms。批量与旧实现不是数学等价，仍须真实新闻质量验收。
 - 每个请求新建轻量BatchedInferencePipeline，复用已加载WhisperModel，避免词对齐状态跨请求污染。仍只有1个ASR请求计算槽，不启动多个模型副本。
 - 已验证PCM16直接转float32数组，避免再次调用PyAV解码。
 - 非法批量时间顺序或显存不足尝试一次旧路径；旧路径失败仍返回脱敏503，不返回部分结果。显存不足回退仍需实机验证，正常部署应选不会OOM的batch值。
@@ -15,7 +15,7 @@
 
 ## 验证状态
 
-本地接口模拟、时间戳合同、OOM/非法时间回退、预取上限与取消测试可运行。没有3060实机成绩，也没有全量人工准确率数据，不能将官方批量基准套用成本项目提速倍数。
+本地接口模拟、时间戳合同、OOM/非法时间回退、预取上限与取消测试通过。3060上同一600秒新闻样本旧模式约75—76秒；批量4因相邻句子时间戳重叠约0.28秒触发回退，总耗时约83秒。因此本次发布仅启用流水线和指标，默认保留legacy，不宣称批量提速或人工准确率已达标。
 
 ## 需授权后的实机验收
 
@@ -23,7 +23,7 @@
 2. `benchmark_asr.py <mono16k-pcm16.wav> --model-path <已固定模型目录> --batches 4,8` 是离线辅助脚本，不连接生产API，不输出转写正文。首轮legacy含预热，脚本比值不能当正式速度；须另外重复、交换测试顺序，并采样GPU峰值显存。
 3. 整期验收记录audio_asr_wall_seconds、ASR内部inference_seconds、总时间、显存峰值与素材/编码共存影响；对比此前约318秒提取+转写基线。
 4. 人工检查主持人口播首字、新闻专名、短简讯、600秒附近跨块内容、切点首帧及声画同步。当前任务成功或相同哈希不是准确率。
-5. 初次灰度用batch4。若显存/质量不达标，改ASR_ENGINE=legacy；control-api仍可使用音频预取，不必改动MediaMTX/UDP服务。
+5. 生产维持legacy；batch4通过真实新闻时间戳、人工质量及耗时验收后才允许灰度。control-api仍可使用音频预取，不必改动MediaMTX/UDP服务。
 6. 备份服务源码、依赖和control-api后逐文件哈希校验发布；不上传密钥/README。本地确认与用户明确部署授权前，不进行生产写入或GPU压测。
 
 接口依据：[faster-whisper 1.2.1源码](https://github.com/SYSTRAN/faster-whisper/blob/v1.2.1/faster_whisper/transcribe.py)。find-docs查询连接失败后使用官方源码核对。

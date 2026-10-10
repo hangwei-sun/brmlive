@@ -117,7 +117,9 @@ def transcribe(
 
 
 def inference_settings():
-    engine = os.environ.get('ASR_ENGINE', 'batched')
+    # Real news batches can overlap aligned sentences. Keep the proven engine
+    # as production default until batch timing and editorial QA both pass.
+    engine = os.environ.get('ASR_ENGINE', 'legacy')
     batch = int(os.environ.get('ASR_BATCH_SIZE', '4'))
     if engine not in ('legacy', 'batched') or not 1 <= batch <= 8:
         raise ValueError('Invalid ASR inference settings')
@@ -130,7 +132,8 @@ def sentence_rows(segments, duration, split_sentences=False):
         if not item.text.strip():
             continue
         if (not math.isfinite(item.start) or not math.isfinite(item.end)
-                or item.start < last or item.end <= item.start or item.end > duration + 1):
+                or not split_sentences and item.start + 1e-6 < last
+                or item.start < 0 or item.end <= item.start or item.end > duration + 1):
             raise ValueError('Invalid ASR timestamp sequence')
         if split_sentences:
             words = getattr(item, 'words', None) or []
