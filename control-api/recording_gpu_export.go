@@ -103,7 +103,13 @@ func exportNewsGPU(ctx context.Context, base, token, source, dir string, job *ne
 		return errors.New("GPU 导出服务状态无效")
 	}
 	resp.Body.Close()
+	retainCompleted := false
 	defer func() {
+		// Keep completed output until the encoder TTL cleanup. A control restart
+		// during ZIP packaging must still be able to reattach and fetch it.
+		if retainCompleted {
+			return
+		}
 		cleanup, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
 		if r, e := request(cleanup, http.MethodDelete, endpoint, nil, 0); e == nil {
@@ -188,6 +194,7 @@ func exportNewsGPU(ctx context.Context, base, token, source, dir string, job *ne
 		job.Progress = max(job.Progress, 10+status.Progress*75/100)
 		save()
 		if status.State == "completed" {
+			retainCompleted = true
 			break
 		}
 		select {
