@@ -27,21 +27,22 @@ type newsPart struct {
 	End   float64 `json:"end"`
 }
 type newsJob struct {
-	Key         string             `json:"key"`
-	Owner       int64              `json:"ownerId"`
-	RecordingID int64              `json:"recordingId"`
-	Kind        string             `json:"kind"`
-	State       string             `json:"state"`
-	Progress    int                `json:"progress"`
-	Message     string             `json:"message,omitempty"`
-	Stage       string             `json:"stage,omitempty"`
-	Encoder     string             `json:"encoder,omitempty"`
-	Parts       []newsPart         `json:"parts"`
-	Files       []string           `json:"files"`
-	CreatedAt   int64              `json:"createdAt"`
-	ExpiresAt   int64              `json:"expiresAt"`
-	RequestHash string             `json:"requestHash,omitempty"`
-	Timings     map[string]float64 `json:"timings,omitempty"`
+	Key               string             `json:"key"`
+	Owner             int64              `json:"ownerId"`
+	RecordingID       int64              `json:"recordingId"`
+	Kind              string             `json:"kind"`
+	State             string             `json:"state"`
+	Progress          int                `json:"progress"`
+	Message           string             `json:"message,omitempty"`
+	Stage             string             `json:"stage,omitempty"`
+	Encoder           string             `json:"encoder,omitempty"`
+	Parts             []newsPart         `json:"parts"`
+	Files             []string           `json:"files"`
+	CreatedAt         int64              `json:"createdAt"`
+	ExpiresAt         int64              `json:"expiresAt"`
+	RequestHash       string             `json:"requestHash,omitempty"`
+	Timings           map[string]float64 `json:"timings,omitempty"`
+	ControlRecoveries int                `json:"controlRecoveries,omitempty"`
 }
 type newsJobInput struct {
 	Key         string           `json:"key"`
@@ -398,6 +399,10 @@ func (a *app) createNewsJob(w http.ResponseWriter, r *http.Request) {
 	}
 	job := newsJob{Key: input.Key, Owner: input.Owner, RecordingID: input.RecordingID, Kind: input.Kind, State: "queued", Parts: input.Parts, Files: []string{}, CreatedAt: time.Now().Unix(), ExpiresAt: time.Now().Add(24 * time.Hour).Unix()}
 	job.RequestHash = newsRequestHash(input)
+	if err := a.saveNewsRecovery(dir, job, info, duration, input.Smart); err != nil {
+		writeJSON(w, 503, map[string]string{"message": "无法保存任务恢复信息"})
+		return
+	}
 	newsWork.Lock()
 	err = writeNewsJob(dir, job)
 	newsWork.Unlock()

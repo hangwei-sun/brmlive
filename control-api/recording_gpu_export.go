@@ -95,7 +95,8 @@ func exportNewsGPU(ctx context.Context, base, token, source, dir string, job *ne
 		return err
 	}
 	var created struct {
-		SourceCached bool `json:"sourceCached"`
+		SourceCached bool   `json:"sourceCached"`
+		State        string `json:"state"`
 	}
 	if err = json.NewDecoder(io.LimitReader(resp.Body, 65536)).Decode(&created); err != nil {
 		resp.Body.Close()
@@ -112,7 +113,10 @@ func exportNewsGPU(ctx context.Context, base, token, source, dir string, job *ne
 	job.Encoder, job.Stage, job.Progress = "nvenc", "正在传输录制文件到 GPU 节点", 1
 	save()
 	// Stream the original once per task; never load a whole recording in RAM.
-	if !created.SourceCached {
+	if created.State == "failed" || created.State == "cancelled" || created.State == "uploading" {
+		return errors.New("原GPU任务未完成上传或已失败，请重新提交")
+	}
+	if !created.SourceCached && created.State != "queued" && created.State != "running" && created.State != "completed" {
 		resp, err = request(ctx, http.MethodPut, endpoint+"/source", file, info.Size())
 		if err != nil {
 			return err

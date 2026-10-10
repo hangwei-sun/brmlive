@@ -315,6 +315,7 @@ func main() {
 	// copies after a control-api image upgrade so new dashboard cards appear.
 	mux.Handle("/", noCache(http.FileServer(http.Dir(env("WEB_ROOT", "/app/web")))))
 
+	a.recoverNewsJobs()
 	server := &http.Server{Addr: ":" + port, Handler: cors(logging(mux))}
 	go a.mediaAlertMonitor()
 	log.Printf("control-api listening on :%s, MediaMTX=%s, TZ=%s", port, mtxURL, loc)
