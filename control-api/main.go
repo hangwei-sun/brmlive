@@ -316,6 +316,7 @@ func main() {
 	mux.Handle("/", noCache(http.FileServer(http.Dir(env("WEB_ROOT", "/app/web")))))
 
 	server := &http.Server{Addr: ":" + port, Handler: cors(logging(mux))}
+	go a.mediaAlertMonitor()
 	log.Printf("control-api listening on :%s, MediaMTX=%s, TZ=%s", port, mtxURL, loc)
 	if err := server.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 		log.Fatal(err)
@@ -2910,12 +2911,16 @@ func (a *app) events(w http.ResponseWriter, r *http.Request) {
 			pageSize = 20
 		}
 		var total int
-		if err := a.db.QueryRow(`SELECT COUNT(*) FROM system_event`).Scan(&total); err != nil {
+		where := ""
+		if r.URL.Query().Get("alertsOnly") == "1" {
+			where = " WHERE level IN ('warn','warning','error') OR kind IN ('news_recovered','news_recovery_failed','media_alert_resolved')"
+		}
+		if err := a.db.QueryRow(`SELECT COUNT(*) FROM system_event` + where).Scan(&total); err != nil {
 			serverError(w, err)
 			return
 		}
 		offset := (page - 1) * pageSize
-		rows, err := a.db.Query(`SELECT id,level,kind,message,created_at FROM system_event ORDER BY id DESC LIMIT ? OFFSET ?`, pageSize, offset)
+		rows, err := a.db.Query(`SELECT id,level,kind,message,created_at FROM system_event`+where+` ORDER BY id DESC LIMIT ? OFFSET ?`, pageSize, offset)
 		if err != nil {
 			serverError(w, err)
 			return

@@ -125,16 +125,32 @@ func exportNewsGPU(ctx context.Context, base, token, source, dir string, job *ne
 	}
 	job.Progress, job.Stage = 10, "GPU 排队中"
 	save()
+	var unavailableSince time.Time
 	for {
 		resp, err = request(ctx, http.MethodGet, endpoint, nil, 0)
 		if err != nil {
-			return err
+			if unavailableSince.IsZero() {
+				unavailableSince = time.Now()
+			}
+			if time.Since(unavailableSince) > 60*time.Second || ctx.Err() != nil {
+				return err
+			}
+			job.Stage = "编码服务暂不可达，等待恢复（最多60秒）"
+			save()
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			case <-time.After(time.Second):
+			}
+			continue
 		}
+		unavailableSince = time.Time{}
 		var status struct {
-			State    string             `json:"state"`
-			Progress int                `json:"progress"`
-			Stage    string             `json:"stage"`
-			Timings  map[string]float64 `json:"timings"`
+			State      string             `json:"state"`
+			Progress   int                `json:"progress"`
+			Stage      string             `json:"stage"`
+			Timings    map[string]float64 `json:"timings"`
+			Recoveries int                `json:"recoveries"`
 		}
 		err = json.NewDecoder(io.LimitReader(resp.Body, 65536)).Decode(&status)
 		resp.Body.Close()
@@ -151,6 +167,9 @@ func exportNewsGPU(ctx context.Context, base, token, source, dir string, job *ne
 		}
 		if job.Timings == nil {
 			job.Timings = map[string]float64{}
+		}
+		if status.Recoveries > 0 {
+			job.Timings["gpu_recoveries"] = float64(status.Recoveries)
 		}
 		for _, key := range []string{"resource_queue_seconds", "encode_seconds"} {
 			if value, ok := status.Timings[key]; ok && value >= 0 && value < 86400 {

@@ -174,6 +174,22 @@ class EncoderTest(unittest.TestCase):
         self.assertNotIn('secret', status.text)
         self.assertFalse((p/'source').exists())
 
+    def test_shutdown_preserves_source_but_user_cancel_does_not(self):
+        self.create()
+        m = self.module.manager
+        p = pathlib.Path(self.tmp.name)/self.key
+        (p/'source').write_bytes(b'test')
+        m.restart_requested.set()
+        with patch.object(m, 'encode_part', side_effect=RuntimeError('service stopping')):
+            m.run(self.key)
+        self.assertEqual(m.get(self.key)['state'], 'queued')
+        self.assertTrue((p/'source').exists())
+        m.update(self.key, state='cancelled')
+        m.stops[self.key].set()
+        m.run(self.key)
+        self.assertEqual(m.get(self.key)['state'], 'cancelled')
+        self.assertFalse((p/'source').exists())
+
 
 if __name__ == '__main__':
     unittest.main()

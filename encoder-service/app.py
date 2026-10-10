@@ -102,6 +102,7 @@ class Manager:
         self.stops = {}
         self.active = set()
         self.cleanup_stop = threading.Event()
+        self.restart_requested = threading.Event()
         self.pool = concurrent.futures.ThreadPoolExecutor(max_workers=2)
         recovered = []
         for p in root.glob("*/state.json"):
@@ -267,9 +268,17 @@ class Manager:
                 self.update(key, files=files, progress=min(99, int(done/total*100)))
             self.update(key, state="completed", progress=100, stage="Ready", expires=time.time()+3600)
         except Exception as error:
-            self.update(key, state="cancelled" if self.stops[key].is_set() else "failed", stage="Hardware export failed; resubmit", errorType=type(error).__name__)
+            if self.restart_requested.is_set() and self.get(key)['state'] != 'cancelled':
+                self.update(key, state='queued', stage='Service restarting; recovery pending')
+            else:
+                self.update(key, state="cancelled" if self.stops[key].is_set() else "failed", stage="Hardware export failed; resubmit", errorType=type(error).__name__)
         finally:
-            (p/"source").unlink(missing_ok=True)
+            keep_source = (self.restart_requested.is_set() and self.get(key)['state'] in ('queued', 'running')
+                           and (p/'source').is_file())
+            if keep_source:
+                self.update(key, state='queued', stage='Service restarting; recovery pending')
+            else:
+                (p/"source").unlink(missing_ok=True)
             (p/"output.partial.mp4").unlink(missing_ok=True)
             with self.lock:
                 self.active.discard(key)
@@ -341,6 +350,8 @@ async def lifespan(app):
         yield
     finally:
         manager.cleanup_stop.set()
+        if os.environ.get('ENCODER_RECOVER_ON_RESTART', '0') == '1':
+            manager.restart_requested.set()
         cleaner.join(timeout=5)
         for stop in manager.stops.values():
             stop.set()
@@ -362,7 +373,16 @@ async def private_clients(request, call_next):
 
 @app.get("/health")
 def health():
-    return {"ready": manager is not None, "encoder": "h264_nvenc", "concurrency": 2}
+    result = {"ready": manager is not None, "encoder": "h264_nvenc", "concurrency": 2}
+    root = os.environ.get('MEDIA_RESOURCE_ROOT')
+    if root:
+        path = pathlib.Path(root)/'monitor.json'
+        try:
+            if not path.is_symlink() and path.stat().st_size < 65536:
+                result['monitor'] = json.loads(path.read_text())
+                result['monitorAgeSeconds'] = max(0, time.time()-path.stat().st_mtime)
+        except (OSError, ValueError): pass
+    return result
 
 
 @app.post("/v1/exports/{key}")
@@ -435,7 +455,7 @@ async def upload(key: str, request: Request):
 @app.get("/v1/exports/{key}")
 def status(key: str):
     j = manager.get(key)
-    return {k: j.get(k) for k in ("state", "progress", "stage", "files", "timings")}
+    return {k: j.get(k) for k in ("state", "progress", "stage", "files", "timings", "recoveries")}
 
 
 @app.get("/v1/exports/{key}/files/{name}")

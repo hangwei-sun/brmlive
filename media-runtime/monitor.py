@@ -88,6 +88,7 @@ if __name__ == '__main__':
     if args.output:
         if not args.output.parent.is_dir() or args.output.is_symlink(): parser.error('Output directory must be provisioned; symlinks refused')
         with tempfile.NamedTemporaryFile(mode='w', prefix='.monitor-', dir=args.output.parent, delete=False) as f:
+            os.fchmod(f.fileno(), 0o640)
             f.write(raw); name = f.name
         try: os.replace(name, args.output)
         finally:

@@ -426,7 +426,11 @@ func (a *app) runNewsJob(dir string, job newsJob, smart *newsSmartConfig, source
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Hour)
 	defer cancel()
 	save := func() { newsWork.Lock(); _ = writeNewsJob(dir, job); newsWork.Unlock() }
-	fail := func(message string) { job.State, job.Message = "failed", message; save() }
+	fail := func(message string) {
+		job.State, job.Message = "failed", message
+		save()
+		a.event("error", "news_recovery_failed", "新闻处理任务失败，请在我的任务中查看并重试")
+	}
 	job.State = "running"
 	save()
 	info, err := os.Stat(source)
@@ -519,6 +523,9 @@ func (a *app) runNewsJob(dir string, job newsJob, smart *newsSmartConfig, source
 	job.State, job.Progress = "completed", 100
 	job.Stage = "处理完成"
 	save()
+	if job.Timings["gpu_recoveries"] > 0 {
+		a.event("info", "news_recovered", "新闻导出任务已在编码服务重启后恢复并完成")
+	}
 }
 func zipNews(dir string, files []string, parts []newsPart) error {
 	file, err := os.Create(filepath.Join(dir, "news-clips.zip"))
